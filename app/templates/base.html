@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{% block title %}Finance Tracker{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css" />
+  <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+</head>
+<body>
+  <nav>
+    <span class="brand">Finance Tracker</span>
+    <a href="/" class="{{ 'active' if active == 'dashboard' }}">Dashboard</a>
+    <a href="/transactions" class="{{ 'active' if active == 'transactions' }}">Transactions</a>
+    <a href="/budgets" class="{{ 'active' if active == 'budgets' }}">Budgets</a>
+    {% if plaid_env == "production" %}
+    <span class="env-badge env-badge-live" title="Connected to real bank data via Plaid Production">LIVE</span>
+    {% else %}
+    <span class="env-badge env-badge-sandbox" title="Plaid Sandbox — fake institutions and test data only">SANDBOX</span>
+    {% endif %}
+  </nav>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+  <script src="/static/app.js"></script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block title %}Budgets · Finance Tracker{% endblock %}
+{% block content %}
+<h1>Budgets</h1>
+
+<div class="card" style="margin-bottom:20px;">
+  <form class="budget-form" id="budget-form">
+    <select id="budget-category" required>
+      <option value="" disabled selected>Category…</option>
+    </select>
+    <input type="number" id="budget-limit" placeholder="Monthly limit" min="0" step="1" required />
+    <button type="submit" class="btn">Save budget</button>
+  </form>
+</div>
+
+<div class="card">
+  <div id="budget-list">
+    <div class="empty-state">No budgets set yet.</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function statusClass(pct) {
+  if (pct > 100) return "status-critical";
+  if (pct >= 75) return "status-warning";
+  return "status-good";
+}
+
+async function loadBudgets() {
+  const budgets = await apiFetch("/api/budgets");
+  const listEl = document.getElementById("budget-list");
+  if (budgets.length === 0) {
+    listEl.innerHTML = '<div class="empty-state">No budgets set yet.</div>';
+    return;
+  }
+  listEl.innerHTML = budgets
+    .map((b) => {
+      const pct = b.monthly_limit > 0 ? (b.spent / b.monthly_limit) * 100 : 0;
+      return `
+        <div class="bar-row">
+          <span>${b.category_primary.replaceAll("_", " ")}</span>
+          <div class="bar-track"><div class="bar-fill ${statusClass(pct)}" style="width:${Math.min(pct, 100)}%"></div></div>
+          <span class="bar-amount">${fmtMoney(b.spent)} / ${fmtMoney(b.monthly_limit)}</span>
+          <span class="delete-link" data-category="${b.category_primary}" style="grid-column: 1 / -1; justify-self: end;">Remove</span>
+        </div>`;
+    })
+    .join("");
+
+  listEl.querySelectorAll(".delete-link").forEach((el) => {
+    el.addEventListener("click", async () => {
+      await apiFetch(`/api/budgets/${encodeURIComponent(el.dataset.category)}`, { method: "DELETE" });
+      loadBudgets();
+    });
+  });
+}
+
+const PLAID_CATEGORIES = [
+  "INCOME", "TRANSFER_IN", "TRANSFER_OUT", "LOAN_PAYMENTS", "BANK_FEES",
+  "ENTERTAINMENT", "FOOD_AND_DRINK", "GENERAL_MERCHANDISE", "HOME_IMPROVEMENT",
+  "MEDICAL", "PERSONAL_CARE", "GENERAL_SERVICES", "GOVERNMENT_AND_NON_PROFIT",
+  "TRANSPORTATION", "TRAVEL", "RENT_AND_UTILITIES", "OTHER",
+];
+
+function loadCategoryOptions() {
+  const select = document.getElementById("budget-category");
+  PLAID_CATEGORIES.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c;
+    opt.textContent = c.replaceAll("_", " ");
+    select.appendChild(opt);
+  });
+}
+
+document.getElementById("budget-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const category_primary = document.getElementById("budget-category").value;
+  const monthly_limit = parseFloat(document.getElementById("budget-limit").value);
+  await apiFetch("/api/budgets", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ category_primary, monthly_limit }),
+  });
+  document.getElementById("budget-limit").value = "";
+  loadBudgets();
+});
+
+loadCategoryOptions();
+loadBudgets().catch((err) => showToast(err.message));
+</script>
+{% endblock %}

@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block title %}Dashboard · Finance Tracker{% endblock %}
+{% block content %}
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
+  <h1>Dashboard</h1>
+  <div style="display:flex; gap:8px;">
+    <button class="btn secondary" id="sync-btn">Sync transactions</button>
+    <button class="btn" id="connect-btn">Connect account</button>
+  </div>
+</div>
+
+<div class="stat-grid">
+  <div class="card stat-tile">
+    <div class="label">Total balance</div>
+    <div class="value" id="stat-balance">—</div>
+  </div>
+  <div class="card stat-tile">
+    <div class="label">Linked accounts</div>
+    <div class="value" id="stat-accounts">—</div>
+  </div>
+  <div class="card stat-tile">
+    <div class="label">Spent this month</div>
+    <div class="value" id="stat-spent">—</div>
+  </div>
+  <div class="card stat-tile">
+    <div class="label">Income this month</div>
+    <div class="value" id="stat-income">—</div>
+  </div>
+</div>
+
+<h2>Linked accounts</h2>
+<div class="card">
+  <ul class="account-list" id="account-list">
+    <li class="empty-state">No accounts linked yet. Click "Connect account" to get started.</li>
+  </ul>
+</div>
+
+<h2>Spending by category (this month)</h2>
+<div class="card">
+  <div id="category-bars">
+    <div class="empty-state">No transactions yet. Link an account and sync transactions.</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadDashboard() {
+  const summary = await apiFetch("/api/dashboard/summary");
+  document.getElementById("stat-balance").textContent = fmtMoney(summary.total_balance);
+  document.getElementById("stat-accounts").textContent = summary.account_count;
+  document.getElementById("stat-spent").textContent = fmtMoney(summary.month_spent);
+  document.getElementById("stat-income").textContent = fmtMoney(summary.month_income);
+
+  const barsEl = document.getElementById("category-bars");
+  if (summary.spend_by_category.length === 0) {
+    barsEl.innerHTML = '<div class="empty-state">No transactions yet. Link an account and sync transactions.</div>';
+  } else {
+    const max = Math.max(...summary.spend_by_category.map((r) => r.amount));
+    barsEl.innerHTML = summary.spend_by_category
+      .map(
+        (row) => `
+        <div class="bar-row">
+          <span>${row.category.replaceAll("_", " ")}</span>
+          <div class="bar-track"><div class="bar-fill" style="width:${(row.amount / max) * 100}%"></div></div>
+          <span class="bar-amount">${fmtMoney(row.amount)}</span>
+        </div>`
+      )
+      .join("");
+  }
+
+  const accounts = await apiFetch("/api/accounts");
+  const listEl = document.getElementById("account-list");
+  if (accounts.length === 0) {
+    listEl.innerHTML = '<li class="empty-state">No accounts linked yet. Click "Connect account" to get started.</li>';
+  } else {
+    listEl.innerHTML = accounts
+      .map(
+        (a) => `
+        <li class="account-row">
+          <div>
+            <div class="name">${a.name}</div>
+            <div class="sub">${a.institution_name} · ${a.subtype}${a.mask ? " ···" + a.mask : ""}</div>
+          </div>
+          <div class="balance">${a.current_balance != null ? fmtMoney(a.current_balance) : "—"}</div>
+        </li>`
+      )
+      .join("");
+  }
+}
+
+document.getElementById("connect-btn").addEventListener("click", () => connectAccount(loadDashboard));
+
+document.getElementById("sync-btn").addEventListener("click", async (e) => {
+  e.target.disabled = true;
+  try {
+    const result = await apiFetch("/api/transactions/sync", { method: "POST" });
+    showToast(`Synced: ${result.added} added, ${result.modified} updated, ${result.removed} removed`);
+    await loadDashboard();
+  } catch (err) {
+    showToast(err.message);
+  } finally {
+    e.target.disabled = false;
+  }
+});
+
+loadDashboard().catch((err) => showToast(err.message));
+</script>
+{% endblock %}

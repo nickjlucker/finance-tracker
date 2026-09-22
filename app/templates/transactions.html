@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Transactions · Finance Tracker{% endblock %}
+{% block content %}
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
+  <h1>Transactions</h1>
+  <button class="btn secondary" id="sync-btn">Sync transactions</button>
+</div>
+
+<div class="filters">
+  <input type="text" id="filter-q" placeholder="Search by name…" />
+  <select id="filter-category"><option value="">All categories</option></select>
+  <input type="date" id="filter-start" />
+  <input type="date" id="filter-end" />
+</div>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Name</th>
+        <th>Account</th>
+        <th>Category</th>
+        <th style="text-align:right">Amount</th>
+      </tr>
+    </thead>
+    <tbody id="txn-body">
+      <tr><td colspan="5" class="empty-state">Loading…</td></tr>
+    </tbody>
+  </table>
+  <div style="text-align:center; margin-top:12px;">
+    <button class="btn secondary" id="load-more-btn">Load more</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let offset = 0;
+const LIMIT = 50;
+
+function currentFilters() {
+  const params = new URLSearchParams();
+  const q = document.getElementById("filter-q").value.trim();
+  const category = document.getElementById("filter-category").value;
+  const start = document.getElementById("filter-start").value;
+  const end = document.getElementById("filter-end").value;
+  if (q) params.set("q", q);
+  if (category) params.set("category", category);
+  if (start) params.set("start_date", start);
+  if (end) params.set("end_date", end);
+  return params;
+}
+
+function renderRows(rows, append) {
+  const body = document.getElementById("txn-body");
+  if (!append) body.innerHTML = "";
+  if (rows.length === 0 && !append) {
+    body.innerHTML = '<tr><td colspan="5" class="empty-state">No transactions found.</td></tr>';
+    return;
+  }
+  body.insertAdjacentHTML(
+    "beforeend",
+    rows
+      .map(
+        (t) => `
+      <tr>
+        <td>${t.date}</td>
+        <td>${t.merchant_name || t.name}${t.pending ? " (pending)" : ""}</td>
+        <td>${t.account_name}</td>
+        <td>${t.category_primary.replaceAll("_", " ")}</td>
+        <td class="amount">${fmtMoney(t.amount)}</td>
+      </tr>`
+      )
+      .join("")
+  );
+}
+
+async function loadTransactions(append = false) {
+  if (!append) offset = 0;
+  const params = currentFilters();
+  params.set("limit", LIMIT);
+  params.set("offset", offset);
+  const rows = await apiFetch(`/api/transactions?${params.toString()}`);
+  renderRows(rows, append);
+  offset += rows.length;
+  document.getElementById("load-more-btn").style.display = rows.length < LIMIT ? "none" : "inline-block";
+}
+
+async function loadCategories() {
+  const categories = await apiFetch("/api/transactions/categories");
+  const select = document.getElementById("filter-category");
+  categories.forEach((c) => {
+    const opt = document.createElement("option");
+    opt.value = c;
+    opt.textContent = c.replaceAll("_", " ");
+    select.appendChild(opt);
+  });
+}
+
+["filter-q", "filter-category", "filter-start", "filter-end"].forEach((id) => {
+  document.getElementById(id).addEventListener("change", () => loadTransactions(false));
+});
+document.getElementById("filter-q").addEventListener("keyup", (e) => {
+  if (e.key === "Enter") loadTransactions(false);
+});
+document.getElementById("load-more-btn").addEventListener("click", () => loadTransactions(true));
+
+document.getElementById("sync-btn").addEventListener("click", async (e) => {
+  e.target.disabled = true;
+  try {
+    const result = await apiFetch("/api/transactions/sync", { method: "POST" });
+    showToast(`Synced: ${result.added} added, ${result.modified} updated, ${result.removed} removed`);
+    await loadTransactions(false);
+  } catch (err) {
+    showToast(err.message);
+  } finally {
+    e.target.disabled = false;
+  }
+});
+
+loadCategories().catch(() => {});
+loadTransactions(false).catch((err) => showToast(err.message));
+</script>
+{% endblock %}
