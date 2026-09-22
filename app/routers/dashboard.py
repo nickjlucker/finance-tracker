@@ -2,12 +2,13 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app import analytics
 from app.config import settings
 from app.database import get_db
-from app.models import Account, Budget, Transaction
+from app.models import Account, Budget
+from app.schemas import DashboardSummary
 
 router = APIRouter(tags=["dashboard"])
 templates = Jinja2Templates(directory="app/templates")
@@ -29,37 +30,25 @@ def budgets_page(request: Request):
     return templates.TemplateResponse("budgets.html", {"request": request, "active": "budgets"})
 
 
-@router.get("/api/dashboard/summary")
+@router.get("/api/dashboard/summary", response_model=DashboardSummary)
 def dashboard_summary(db: Session = Depends(get_db)):
     accounts = db.query(Account).all()
-    total_balance = sum(a.current_balance or 0.0 for a in accounts)
-
     today = date.today()
     month_start = today.replace(day=1)
 
-    spend_rows = (
-        db.query(Transaction.category_primary, func.sum(Transaction.amount))
-        .filter(Transaction.date >= month_start, Transaction.date <= today, Transaction.amount > 0)
-        .group_by(Transaction.category_primary)
-        .all()
-    )
+    spend_rows = analytics.spend_by_category(db, month_start, today)
     spend_by_category = [{"category": category, "amount": total} for category, total in spend_rows]
     total_spent = sum(row["amount"] for row in spend_by_category)
-
-    income_total = (
-        db.query(func.sum(Transaction.amount))
-        .filter(Transaction.date >= month_start, Transaction.date <= today, Transaction.amount < 0)
-        .scalar()
-        or 0.0
-    )
 
     budget_count = db.query(Budget).count()
 
     return {
-        "total_balance": total_balance,
+        **analytics.cash_debt_net(db),
         "account_count": len(accounts),
         "month_spent": total_spent,
-        "month_income": -income_total,
+        "month_income": analytics.income_total(db, month_start, today),
+        "month_invested": analytics.invested_amount(db, month_start, today),
+        "interest_paid_ttm": analytics.interest_paid_ttm(db),
         "spend_by_category": sorted(spend_by_category, key=lambda r: -r["amount"]),
         "budget_count": budget_count,
     }

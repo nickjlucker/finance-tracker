@@ -4,19 +4,23 @@
 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
   <h1>Dashboard</h1>
   <div style="display:flex; gap:8px;">
-    <button class="btn secondary" id="sync-btn">Sync transactions</button>
+    <button class="btn secondary" id="sync-btn">Sync</button>
     <button class="btn" id="connect-btn">Connect account</button>
   </div>
 </div>
 
 <div class="stat-grid">
   <div class="card stat-tile">
-    <div class="label">Total balance</div>
-    <div class="value" id="stat-balance">—</div>
+    <div class="label">Cash</div>
+    <div class="value" id="stat-cash">—</div>
   </div>
   <div class="card stat-tile">
-    <div class="label">Linked accounts</div>
-    <div class="value" id="stat-accounts">—</div>
+    <div class="label">Debt</div>
+    <div class="value" id="stat-debt">—</div>
+  </div>
+  <div class="card stat-tile">
+    <div class="label">Net position</div>
+    <div class="value" id="stat-net">—</div>
   </div>
   <div class="card stat-tile">
     <div class="label">Spent this month</div>
@@ -26,6 +30,69 @@
     <div class="label">Income this month</div>
     <div class="value" id="stat-income">—</div>
   </div>
+  <div class="card stat-tile">
+    <div class="label">Invested this month</div>
+    <div class="value" id="stat-invested">—</div>
+  </div>
+</div>
+
+<h2>Critical alerts</h2>
+<div class="card">
+  <div id="alert-list">
+    <div class="empty-state">Loading…</div>
+  </div>
+</div>
+
+<h2>Net worth</h2>
+<div class="card">
+  <div class="net-worth-top">
+    <div>
+      <div class="label">Current net position</div>
+      <div class="value" id="net-worth-current">—</div>
+      <div class="sub" id="net-worth-since">—</div>
+    </div>
+    <div class="return-input">
+      <label for="return-rate">Assumed annual return</label>
+      <input type="number" id="return-rate" value="5" min="-20" max="20" step="0.5" />
+      <span>%</span>
+    </div>
+  </div>
+  <div class="empty-state" id="net-worth-note" style="display:none;"></div>
+  <table id="projection-table">
+    <thead>
+      <tr><th>Horizon</th><th>Projected net position</th></tr>
+    </thead>
+    <tbody id="projection-body"></tbody>
+  </table>
+</div>
+
+<h2>Interest paid (trailing 12 months)</h2>
+<div class="card">
+  <div class="stat-tile">
+    <div class="value" id="stat-interest">—</div>
+    <div class="sub" id="interest-note"></div>
+  </div>
+</div>
+
+<h2>Recurring bills</h2>
+<div class="card">
+  <ul class="account-list" id="recurring-list">
+    <li class="empty-state">Loading…</li>
+  </ul>
+</div>
+
+<h2>Flagged transactions</h2>
+<div class="card">
+  <ul class="account-list" id="flags-list">
+    <li class="empty-state">Loading…</li>
+  </ul>
+</div>
+
+<h2>Linked institutions</h2>
+<div class="card">
+  <ul class="account-list" id="institution-list">
+    <li class="empty-state">Loading…</li>
+  </ul>
 </div>
 
 <h2>Linked accounts</h2>
@@ -45,12 +112,23 @@
 
 {% block scripts %}
 <script>
-async function loadDashboard() {
+function fmtDate(iso) {
+  return new Date(iso + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+async function loadSummary() {
   const summary = await apiFetch("/api/dashboard/summary");
-  document.getElementById("stat-balance").textContent = fmtMoney(summary.total_balance);
-  document.getElementById("stat-accounts").textContent = summary.account_count;
+  document.getElementById("stat-cash").textContent = fmtMoney(summary.cash);
+  document.getElementById("stat-debt").textContent = fmtMoney(summary.debt);
+  document.getElementById("stat-net").textContent = fmtMoney(summary.net_position);
   document.getElementById("stat-spent").textContent = fmtMoney(summary.month_spent);
   document.getElementById("stat-income").textContent = fmtMoney(summary.month_income);
+  document.getElementById("stat-invested").textContent = fmtMoney(summary.month_invested);
+  document.getElementById("stat-interest").textContent = fmtMoney(summary.interest_paid_ttm);
+  document.getElementById("interest-note").textContent =
+    summary.interest_paid_ttm === 0
+      ? "No interest charged — carrying no revolving balance."
+      : "See critical alerts above for details.";
 
   const barsEl = document.getElementById("category-bars");
   if (summary.spend_by_category.length === 0) {
@@ -68,7 +146,125 @@ async function loadDashboard() {
       )
       .join("");
   }
+}
 
+async function loadAlerts() {
+  const alerts = await apiFetch("/api/dashboard/alerts");
+  const el = document.getElementById("alert-list");
+  if (alerts.length === 0) {
+    el.innerHTML = '<div class="empty-state">No critical alerts — you\'re in good shape.</div>';
+    return;
+  }
+  el.innerHTML = alerts
+    .map(
+      (a) => `
+      <div class="alert-row">
+        <span class="severity-badge severity-${a.severity}">${a.severity}</span>
+        <span>${a.message}</span>
+      </div>`
+    )
+    .join("");
+}
+
+async function loadNetWorth(annualReturnPct) {
+  const data = await apiFetch(`/api/dashboard/networth?annual_return_pct=${annualReturnPct}`);
+  const current = data.history.length ? data.history[data.history.length - 1].net_worth : 0;
+  document.getElementById("net-worth-current").textContent = fmtMoney(current);
+  document.getElementById("net-worth-since").textContent = data.tracking_since
+    ? `tracking since ${fmtDate(data.tracking_since)} · ${fmtMoney(data.monthly_net_savings)}/mo avg net savings`
+    : "tracking starts with your next sync";
+
+  const noteEl = document.getElementById("net-worth-note");
+  if (data.history.length < 30) {
+    noteEl.style.display = "block";
+    noteEl.textContent =
+      "Balance history just started — projections below are rough estimates that will sharpen as more history accumulates.";
+  } else {
+    noteEl.style.display = "none";
+  }
+
+  document.getElementById("projection-body").innerHTML = data.projection
+    .map((p) => `<tr><td>${p.years} year${p.years > 1 ? "s" : ""}</td><td class="amount">${fmtMoney(p.projected_value)}</td></tr>`)
+    .join("");
+}
+
+async function loadRecurring() {
+  const bills = await apiFetch("/api/dashboard/recurring");
+  const el = document.getElementById("recurring-list");
+  if (bills.length === 0) {
+    el.innerHTML = '<li class="empty-state">No recurring bills detected yet.</li>';
+    return;
+  }
+  el.innerHTML = bills
+    .map(
+      (b) => `
+      <li class="account-row">
+        <div>
+          <div class="name">${b.merchant}</div>
+          <div class="sub">every ~${b.cadence_days} days · next expected ${fmtDate(b.next_expected_date)}</div>
+        </div>
+        <div class="balance">${fmtMoney(b.average_amount)}</div>
+      </li>`
+    )
+    .join("");
+}
+
+async function loadFlags() {
+  const flags = await apiFetch("/api/dashboard/flags");
+  const el = document.getElementById("flags-list");
+  if (flags.length === 0) {
+    el.innerHTML = '<li class="empty-state">Nothing flagged in the last 6 months.</li>';
+    return;
+  }
+  el.innerHTML = flags
+    .map(
+      (f) => `
+      <li class="account-row">
+        <div>
+          <div class="name">${f.name}</div>
+          <div class="sub">${fmtDate(f.date)} · ${f.reason}</div>
+        </div>
+        <div class="balance">${fmtMoney(f.amount)}</div>
+      </li>`
+    )
+    .join("");
+}
+
+async function loadInstitutions() {
+  const institutions = await apiFetch("/api/accounts/institutions");
+  const el = document.getElementById("institution-list");
+  if (institutions.length === 0) {
+    el.innerHTML = '<li class="empty-state">No institutions linked yet.</li>';
+    return;
+  }
+  el.innerHTML = institutions
+    .map(
+      (inst) => `
+      <li class="account-row">
+        <div>
+          <div class="name">${inst.institution_name}</div>
+          <div class="sub">${inst.account_count} account${inst.account_count === 1 ? "" : "s"}</div>
+        </div>
+        <span class="delete-link" data-item-id="${inst.item_id}">Disconnect</span>
+      </li>`
+    )
+    .join("");
+
+  el.querySelectorAll(".delete-link").forEach((link) => {
+    link.addEventListener("click", async () => {
+      if (!confirm("Disconnect this institution? Its accounts and transaction history will be removed locally until you relink.")) return;
+      try {
+        await apiFetch(`/api/accounts/institutions/${link.dataset.itemId}`, { method: "DELETE" });
+        showToast("Institution disconnected");
+        await loadDashboard();
+      } catch (err) {
+        showToast(err.message);
+      }
+    });
+  });
+}
+
+async function loadAccounts() {
   const accounts = await apiFetch("/api/accounts");
   const listEl = document.getElementById("account-list");
   if (accounts.length === 0) {
@@ -89,12 +285,29 @@ async function loadDashboard() {
   }
 }
 
+async function loadDashboard() {
+  const returnRate = parseFloat(document.getElementById("return-rate").value) || 0;
+  await Promise.all([
+    loadSummary(),
+    loadAlerts(),
+    loadNetWorth(returnRate),
+    loadRecurring(),
+    loadFlags(),
+    loadInstitutions(),
+    loadAccounts(),
+  ]);
+}
+
 document.getElementById("connect-btn").addEventListener("click", () => connectAccount(loadDashboard));
+
+document.getElementById("return-rate").addEventListener("change", async (e) => {
+  await loadNetWorth(parseFloat(e.target.value) || 0);
+});
 
 document.getElementById("sync-btn").addEventListener("click", async (e) => {
   e.target.disabled = true;
   try {
-    const result = await apiFetch("/api/transactions/sync", { method: "POST" });
+    const result = await apiFetch("/api/sync/full", { method: "POST" });
     showToast(`Synced: ${result.added} added, ${result.modified} updated, ${result.removed} removed`);
     await loadDashboard();
   } catch (err) {

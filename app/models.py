@@ -52,6 +52,10 @@ class Transaction(Base):
     pending: Mapped[bool] = mapped_column(default=False)
     category_primary: Mapped[str] = mapped_column(String, default="OTHER", index=True)
     category_detailed: Mapped[str] = mapped_column(String, default="")
+    is_internal_transfer: Mapped[bool] = mapped_column(default=False, index=True)
+    matched_transaction_id: Mapped[int | None] = mapped_column(
+        ForeignKey("transactions.id"), nullable=True
+    )
 
     account: Mapped["Account"] = relationship(back_populates="transactions")
 
@@ -63,3 +67,28 @@ class Budget(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     category_primary: Mapped[str] = mapped_column(String, index=True)
     monthly_limit: Mapped[float] = mapped_column(Float)
+
+
+class BalanceSnapshot(Base):
+    __tablename__ = "balance_snapshots"
+    __table_args__ = (UniqueConstraint("account_id", "recorded_at", name="uq_snapshot_account_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"))
+    balance: Mapped[float] = mapped_column(Float)
+    recorded_at: Mapped[date] = mapped_column(Date, index=True)
+
+
+class CardLiability(Base):
+    __tablename__ = "card_liabilities"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), unique=True)
+    apr_purchase: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_statement_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
+    minimum_payment_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    next_payment_due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    is_overdue: Mapped[bool | None] = mapped_column(nullable=True)
+    last_payment_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_payment_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

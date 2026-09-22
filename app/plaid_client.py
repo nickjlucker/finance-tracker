@@ -6,6 +6,7 @@ from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchan
 from plaid.model.item_remove_request import ItemRemoveRequest
 from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.institutions_get_by_id_request import InstitutionsGetByIdRequest
+from plaid.model.liabilities_get_request import LiabilitiesGetRequest
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
 from plaid.model.products import Products
@@ -36,8 +37,17 @@ client = _client()
 
 
 def create_link_token(user_id: str) -> str:
+    # Only "transactions" is required to even show an institution in Link — other
+    # configured products (e.g. "liabilities") are requested opportunistically via
+    # required_if_supported_products, so institutions that don't support them
+    # (Webull, Bilt, etc.) aren't excluded from Link entirely.
+    products = settings.plaid_products_list
+    required = [Products("transactions")] if "transactions" in products else []
+    opportunistic = [Products(p) for p in products if p != "transactions"]
+
     request = LinkTokenCreateRequest(
-        products=[Products(p) for p in settings.plaid_products_list],
+        products=required,
+        required_if_supported_products=opportunistic,
         client_name="Personal Finance Tracker",
         country_codes=[CountryCode(c) for c in settings.plaid_country_codes_list],
         language="en",
@@ -74,6 +84,11 @@ def get_accounts(access_token: str) -> list:
 
 def remove_item(access_token: str) -> None:
     client.item_remove(ItemRemoveRequest(access_token=access_token))
+
+
+def get_liabilities(access_token: str) -> list:
+    response = client.liabilities_get(LiabilitiesGetRequest(access_token=access_token))
+    return response.liabilities.credit or []
 
 
 def sync_transactions(access_token: str, cursor: str | None) -> dict:

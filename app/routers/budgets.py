@@ -1,31 +1,17 @@
-from datetime import date
-
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app import analytics
 from app.database import get_db
-from app.models import Budget, Transaction
+from app.models import Budget
 from app.schemas import BudgetIn, BudgetOut
 
 router = APIRouter(prefix="/api/budgets", tags=["budgets"])
 
 
-def _month_spend_by_category(db: Session) -> dict[str, float]:
-    today = date.today()
-    month_start = today.replace(day=1)
-    rows = (
-        db.query(Transaction.category_primary, func.sum(Transaction.amount))
-        .filter(Transaction.date >= month_start, Transaction.date <= today, Transaction.amount > 0)
-        .group_by(Transaction.category_primary)
-        .all()
-    )
-    return {category: total for category, total in rows}
-
-
 @router.get("", response_model=list[BudgetOut])
 def list_budgets(db: Session = Depends(get_db)):
-    spend_by_category = _month_spend_by_category(db)
+    spend_by_category = analytics.month_spend_by_category(db)
     budgets = db.query(Budget).all()
     out = []
     for budget in budgets:
@@ -45,7 +31,7 @@ def upsert_budget(payload: BudgetIn, db: Session = Depends(get_db)):
         budget.monthly_limit = payload.monthly_limit
     db.commit()
 
-    spend_by_category = _month_spend_by_category(db)
+    spend_by_category = analytics.month_spend_by_category(db)
     data = BudgetOut.model_validate(budget)
     data.spent = spend_by_category.get(budget.category_primary, 0.0)
     return data

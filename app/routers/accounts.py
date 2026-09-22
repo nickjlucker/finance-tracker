@@ -1,10 +1,14 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app import plaid_client
 from app.database import get_db
 from app.models import Account, PlaidItem
-from app.schemas import AccountOut
+from app.schemas import AccountOut, InstitutionOut
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
@@ -18,6 +22,31 @@ def list_accounts(db: Session = Depends(get_db)):
         data.institution_name = acct.item.institution_name
         out.append(data)
     return out
+
+
+@router.get("/institutions", response_model=list[InstitutionOut])
+def list_institutions(db: Session = Depends(get_db)):
+    items = db.query(PlaidItem).all()
+    return [
+        InstitutionOut(item_id=item.item_id, institution_name=item.institution_name, account_count=len(item.accounts))
+        for item in items
+    ]
+
+
+@router.delete("/institutions/{item_id}")
+def disconnect_institution(item_id: str, db: Session = Depends(get_db)):
+    item = db.query(PlaidItem).filter_by(item_id=item_id).one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Institution not found")
+
+    try:
+        plaid_client.remove_item(item.access_token)
+    except Exception as exc:
+        logger.warning("item_remove failed for %s, proceeding with local cleanup: %s", item.institution_name, exc)
+
+    db.delete(item)
+    db.commit()
+    return {"status": "ok"}
 
 
 @router.post("/refresh")
