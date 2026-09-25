@@ -9,6 +9,21 @@
 </div>
 
 <div class="grid">
+  <!-- Plan nudge -->
+  <section class="card span-12" id="plan-card">
+    <div class="split" style="align-items:center">
+      <div style="min-width:0;flex:1">
+        <div class="kpi-label">This paycheck <span id="plan-card-status"></span></div>
+        <div class="instruction" id="plan-card-text" style="font-size:16px;margin:6px 0 0"><span class="skeleton" style="height:18px"></span></div>
+      </div>
+      <div style="text-align:right">
+        <div class="kpi-label">Streak</div>
+        <div class="kpi-value" id="plan-card-streak" style="font-size:22px;margin-top:2px">—</div>
+      </div>
+      <a class="btn secondary" href="/plan">Open plan →</a>
+    </div>
+  </section>
+
   <!-- KPIs -->
   <section class="card span-3 kpi-hero">
     <div class="kpi-label">Net worth</div>
@@ -54,6 +69,21 @@
     </div>
     <div id="liquidity"><span class="skeleton"></span></div>
     <div id="alert-list"></div>
+  </section>
+
+  <!-- Daily spending -->
+  <section class="card span-12">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">Daily spending · last 30 days</h2>
+        <div class="card-sub" id="daily-sub">&nbsp;</div>
+      </div>
+      <div class="page-actions">
+        <label class="input-group toggle"><input type="checkbox" id="daily-include-bills" /> Include bills</label>
+        <a class="btn ghost" href="/transactions">All transactions →</a>
+      </div>
+    </div>
+    <div id="daily-body"><span class="skeleton" style="height:200px"></span></div>
   </section>
 
   <!-- Income vs spend + upcoming -->
@@ -145,6 +175,17 @@
   </section>
   </div>
 
+  <!-- Investments -->
+  <section class="card span-12" id="investments-card">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">Investments</h2>
+        <div class="card-sub" id="inv-sub">&nbsp;</div>
+      </div>
+    </div>
+    <div id="inv-body"><span class="skeleton" style="height:120px"></span></div>
+  </section>
+
   <!-- Accounts -->
   <section class="card span-12">
     <div class="card-head">
@@ -176,6 +217,28 @@ document.getElementById("today-label").textContent = new Date().toLocaleDateStri
 
 function stat(label, value, tone = "") {
   return `<div><div class="kpi-label">${label}</div><div class="stat-value amount ${tone}">${value}</div></div>`;
+}
+
+// --- plan nudge ------------------------------------------------------------------
+
+async function loadPlanCard() {
+  const p = await apiFetch("/api/plan");
+  const a = p.action;
+  const payday = p.next_payday;
+  const when = payday && daysFromToday(payday) >= 0 && !(p.this_period && p.this_period.start === p.today && !p.this_period.expected)
+    ? `When your paycheck lands ${daysFromToday(payday) === 0 ? "today" : fmtRelativeDay(payday)}: `
+    : "From this paycheck: ";
+  const what = a.kind === "split"
+    ? `move <strong>${fmtMoney(a.to_buffer)}</strong> to savings (finishes your buffer) and <strong>${fmtMoney(a.to_invest)}</strong> to investing.`
+    : a.kind === "build_buffer"
+      ? `move <strong>${fmtMoney(a.to_buffer)}</strong> to savings to build your cash buffer.`
+      : `invest <strong>${fmtMoney(a.to_invest)}</strong>.`;
+  document.getElementById("plan-card-text").innerHTML = when + what;
+  document.getElementById("plan-card-streak").textContent = `${p.streak} paycheck${p.streak === 1 ? "" : "s"}`;
+  const period = p.this_period;
+  document.getElementById("plan-card-status").innerHTML = period
+    ? ` · ${fmtMoney(period.invested_from_pay)} of ${fmtMoneyWhole(p.settings.invest_min_per_paycheck)} moved so far`
+    : "";
 }
 
 // --- KPIs + categories ---------------------------------------------------------
@@ -285,6 +348,20 @@ async function loadForecast(floor) {
     <div class="footnote">Card purchases aren't subtracted when you make them. They hit checking when you pay the card, which shows up as a card payment above.</div>`;
   if (recurringItems) renderUpcoming(recurringItems);
 }
+
+// --- daily spending ------------------------------------------------------------
+
+async function loadDaily() {
+  const includeBills = document.getElementById("daily-include-bills").checked;
+  const data = await apiFetch(`/api/transactions/daily?include_bills=${includeBills}`);
+  document.getElementById("daily-sub").textContent = dailySpendingSub(data);
+  const body = document.getElementById("daily-body");
+  body.innerHTML = dailySpendingHtml(data, body.clientWidth);
+  // A day opens the Transactions page filtered to it.
+  wireDailyStack(body, (start, end) => { location.href = `/transactions?start=${start}&end=${end}`; });
+}
+
+document.getElementById("daily-include-bills").addEventListener("change", () => loadDaily().catch((e) => showToast(e.message)));
 
 // --- monthly -------------------------------------------------------------------
 
@@ -450,7 +527,8 @@ function renderNetWorthChart() {
     : [];
 
   const el = document.getElementById("networth-chart");
-  el.innerHTML = svgTimeChart(shown, projection) || '<div class="chart-empty">Not enough history in this range.</div>';
+  const width = Math.max(300, Math.round(el.clientWidth || 640));
+  el.innerHTML = svgTimeChart(shown, projection, { width, height: width < 500 ? 200 : 240 }) || '<div class="chart-empty">Not enough history in this range.</div>';
   wireTimeChart(el);
 
   document.getElementById("nw-current").textContent = last ? fmtMoneyWhole(last.value) : "—";
@@ -478,13 +556,17 @@ async function loadNetWorth(annualReturnPct) {
   netWorthData = data;
   const savings = data.monthly_net_savings;
   const estimatedNote = data.reconstructed_until
-    ? ` · through ${fmtDate(data.reconstructed_until)} is estimated from transactions (investment market moves not included)`
+    ? ` · through ${fmtDate(data.reconstructed_until)} is estimated from transactions${data.investments_priced ? ", with investments priced from market closes" : " (investment market moves not included)"}`
     : "";
   document.getElementById("networth-sub").innerHTML = data.tracking_since
     ? `Since ${fmtDate(data.tracking_since, { month: "short", day: "numeric", year: "numeric" })} · averaging <span class="${savings < 0 ? "delta-bad" : "delta-good"}">${savings < 0 ? "−" : "+"}${fmtMoneyWhole(Math.abs(savings))}/mo</span> saved${estimatedNote}`
     : "Tracking starts with your next sync";
 
   renderNetWorthChart();
+  if (data.investments_missing_growth.length) {
+    document.getElementById("networth-sub").innerHTML +=
+      `<div class="callout warn" style="margin:8px 0 0"><span class="dot"></span><span>${data.investments_missing_growth.join(", ")} growth isn't in this history: only its balance is shared, so the line can't show market gains before your syncs. See Investments below to grant access.</span></div>`;
+  }
 
   const rough = data.data_confidence !== "established";
   document.getElementById("projection-stats").innerHTML = data.projection
@@ -504,6 +586,138 @@ function wireSegmented(id, key, attr) {
 }
 wireSegmented("nw-range", "days", "days");
 wireSegmented("nw-projection", "years", "years");
+
+// --- investments -----------------------------------------------------------------
+
+function pctText(v, digits = 1) {
+  return `${v < 0 ? "−" : "+"}${(Math.abs(v) * 100).toFixed(digits)}%`;
+}
+
+function signedMoney(v) {
+  return `<span class="${v < 0 ? "delta-bad" : "delta-good"}">${v < 0 ? "−" : "+"}${fmtMoney(Math.abs(v))}</span>`;
+}
+
+let investmentsData = null;
+let invRangeDays = 365;
+
+const INV_RANGES = [["1M", 30, "1m"], ["3M", 91, "3m"], ["6M", 182, "6m"], ["1Y", 365, "1y"], ["2Y", 730, "2y"]];
+
+function renderInvestmentChart() {
+  const inv = investmentsData;
+  const el = document.getElementById("inv-chart");
+  if (!inv || !el) return;
+  const pts = inv.priced_history;
+  if (pts.length < 2) {
+    el.innerHTML = "";
+    return;
+  }
+  const lastT = new Date(pts[pts.length - 1].date + "T00:00:00").getTime();
+  const cutoff = lastT - invRangeDays * 86400000;
+  const shown = pts.filter((p) => new Date(p.date + "T00:00:00").getTime() >= cutoff);
+  const width = Math.max(300, Math.round(el.clientWidth || 640));
+  const chart = svgTimeChart(shown.map((p) => ({ date: p.date, value: p.value, estimated: inv.priced_history_mode !== "trades" })), [], { height: width < 500 ? 200 : 260, width });
+  el.innerHTML = chart;
+  wireTimeChart(el);
+
+  const first = shown[0], last = shown[shown.length - 1];
+  const change = last.value - first.value;
+  document.getElementById("inv-range-change").innerHTML =
+    `<span class="${change < 0 ? "delta-bad" : "delta-good"}">${change < 0 ? "−" : "+"}${fmtMoneyWhole(Math.abs(change))} (${pctText(first.value ? change / first.value : 0)})</span> since ${fmtDate(first.date, { month: "short", day: "numeric", year: "numeric" })}`;
+}
+
+async function loadInvestments() {
+  const inv = await apiFetch("/api/dashboard/investments");
+  investmentsData = inv;
+  const card = document.getElementById("investments-card");
+  if (!inv.accounts.length) {
+    card.hidden = true;
+    return;
+  }
+  card.hidden = false;
+  const where = [...new Set(inv.accounts.map((a) => a.institution_name))].join(", ");
+  const source = inv.price_source ? ` · prices from ${inv.price_source === "yahoo" ? "Yahoo Finance" : inv.price_source === "tiingo" ? "Tiingo" : inv.price_source}` : "";
+  document.getElementById("inv-sub").textContent = `${where} · ${inv.holdings.length} positions${source}`;
+  const body = document.getElementById("inv-body");
+
+  const consent = inv.items_needing_consent.length
+    ? `<div class="callout warn" style="align-items:center">
+        <span class="dot"></span>
+        <span style="flex:1">${inv.items_needing_consent.map((i) => escapeHtml(i.institution_name)).join(", ")} is connected with <strong>balance access only</strong>, so holdings, trades and dividends can't be shown. Grant investment access to pull them.</span>
+        ${inv.items_needing_consent.map((i) => `<button class="btn grant-access" data-item-id="${i.item_id}" type="button">Grant ${escapeHtml(i.institution_name)} access</button>`).join("")}
+      </div>`
+    : "";
+
+  const stat = (label, value, sub = "") => `<div><div class="kpi-label">${label}</div><div class="kpi-value" style="font-size:22px">${value}</div><div class="kpi-sub">${sub || "&nbsp;"}</div></div>`;
+  const r = inv.priced_returns;
+  const since = inv.history_start ? fmtDate(inv.history_start, { month: "short", day: "numeric", year: "numeric" }) : null;
+  let growth;
+  if (inv.total_gain != null) {
+    growth = stat("Total growth", signedMoney(inv.total_gain), inv.annualized_return != null ? `${pctText(inv.annualized_return)} a year, money-weighted` : "");
+  } else if (inv.unrealized_gain != null) {
+    growth = stat("Unrealized gain", signedMoney(inv.unrealized_gain), inv.cost_basis_total ? `${pctText(inv.unrealized_gain / inv.cost_basis_total)} over cost basis` : "");
+  } else {
+    growth = stat("Return · 1 year", r["1y"] != null ? `<span class="${r["1y"] < 0 ? "delta-bad" : "delta-good"}">${pctText(r["1y"])}</span>` : "—", "Today's positions, price change only");
+  }
+  const stats = `<div class="stats" style="margin-top:0;padding-top:0;border-top:none;margin-bottom:16px">
+    ${stat("Value", fmtMoney(inv.value), escapeHtml(inv.accounts.map((a) => a.name).join(" · ")))}
+    ${growth}
+    ${stat("Return · 3 months", r["3m"] != null ? `<span class="${r["3m"] < 0 ? "delta-bad" : "delta-good"}">${pctText(r["3m"])}</span>` : "—", r["1m"] != null ? `${pctText(r["1m"])} over 1 month` : "")}
+    ${stat("Net contributed", fmtMoney(inv.net_contributed), inv.contributions_source === "bank_transfers" ? (since ? `Bank transfers since ${since}` : "No transfers found") : (since ? `Deposits minus withdrawals since ${since}` : ""))}
+    ${stat("Dividends & interest", fmtMoney(inv.dividends), inv.access === "ok" ? `${inv.trade_counts.buys} buys · ${inv.trade_counts.sells} sells reported` : "")}
+  </div>`;
+
+  const modeNote = inv.priced_history_mode === "trades"
+    ? "Account value each day, from your trades and market closes."
+    : "Your <strong>current positions</strong> priced at each day's close, as if you'd held them the whole time. Webull hasn't shared trade history, so buys and sells along the way aren't reflected.";
+  const chartBlock = inv.priced_history.length >= 2
+    ? `<div class="chart-controls">
+        <div class="nw-headline" style="margin:0"><div class="kpi-sub" id="inv-range-change"></div></div>
+        <div class="segmented" id="inv-range">${INV_RANGES.map(([label, days]) => `<button type="button" data-days="${days}" aria-pressed="${days === invRangeDays}">${label}</button>`).join("")}</div>
+      </div>
+      <div id="inv-chart"></div>
+      <div class="footnote">${modeNote}${inv.unpriced.length ? ` ${escapeHtml(inv.unpriced.join(", "))} has no daily market price and is held at today's value.` : ""}</div>`
+    : "";
+
+  const hasBasis = inv.holdings.some((h) => h.cost_basis != null);
+  const ret = (v) => (v == null ? '<span class="muted">—</span>' : `<span class="${v < 0 ? "delta-bad" : "delta-good"}">${pctText(v)}</span>`);
+  const table = inv.holdings.length
+    ? `<div class="table-wrap" style="margin-top:16px"><table>
+        <thead><tr><th>Holding</th><th class="amount">Shares</th><th class="amount">Price</th><th class="amount">Value</th>
+          ${hasBasis ? '<th class="amount">Cost basis</th><th class="amount">Gain</th>' : ""}
+          <th class="amount">1M</th><th class="amount">1Y</th><th>Weight</th></tr></thead>
+        <tbody>${inv.holdings
+          .map((h) => `<tr>
+            <td><div class="cell-title">${escapeHtml(h.ticker)}</div><div class="cell-sub">${escapeHtml(h.name || "")}</div></td>
+            <td class="amount">${h.quantity != null ? (+h.quantity.toFixed(4)).toLocaleString() : "—"}</td>
+            <td class="amount muted">${h.price != null ? fmtMoney(h.price) : "—"}</td>
+            <td class="amount">${fmtMoney(h.value)}</td>
+            ${hasBasis ? `<td class="amount muted">${h.cost_basis != null ? fmtMoney(h.cost_basis) : "—"}</td><td class="amount">${h.gain != null ? signedMoney(h.gain) : "—"}</td>` : ""}
+            <td class="amount">${ret(h.return_1m)}</td>
+            <td class="amount">${ret(h.return_1y)}</td>
+            <td style="min-width:110px"><div class="bar-track"><div class="bar-fill" style="width:${(h.weight || 0) * 100}%"></div></div><div class="cell-sub">${h.weight != null ? `${(h.weight * 100).toFixed(1)}%` : ""}</div></td>
+          </tr>`)
+          .join("")}</tbody></table></div>
+      ${hasBasis ? "" : '<div class="footnote">Webull doesn\'t report cost basis through Plaid, so gains since purchase can\'t be shown per position.</div>'}`
+    : "";
+
+  body.innerHTML = consent + stats + chartBlock + table;
+  renderInvestmentChart();
+  const range = document.getElementById("inv-range");
+  if (range) {
+    range.querySelectorAll("button").forEach((btn) =>
+      btn.addEventListener("click", () => {
+        range.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
+        invRangeDays = Number(btn.dataset.days);
+        renderInvestmentChart();
+      })
+    );
+  }
+  body.querySelectorAll(".grant-access").forEach((btn) =>
+    btn.addEventListener("click", () =>
+      grantProductAccess(btn.dataset.itemId, "investments", loadDashboard).catch((e) => showToast(e.message))
+    )
+  );
+}
 
 // --- flags ---------------------------------------------------------------------
 
@@ -613,13 +827,16 @@ function refreshCashViews() {
 function loadDashboard() {
   // allSettled: one failing section shouldn't blank out the rest.
   return Promise.allSettled([
+    loadPlanCard(),
     loadSummary(),
     loadAlerts(),
     loadForecast(safetyFloor()),
     loadMonthly(),
+    loadDaily(),
     loadRecurring(),
     loadNetWorth(returnRate()),
     loadFlags(),
+    loadInvestments(),
     loadAccounts(),
   ]).then((results) => results.filter((r) => r.status === "rejected").forEach((r) => showToast(r.reason.message)));
 }

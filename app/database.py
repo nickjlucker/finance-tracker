@@ -12,25 +12,32 @@ class Base(DeclarativeBase):
     pass
 
 
-_TRANSACTIONS_COLUMN_MIGRATIONS = {
-    "is_internal_transfer": "ALTER TABLE transactions ADD COLUMN is_internal_transfer BOOLEAN DEFAULT 0",
-    "matched_transaction_id": "ALTER TABLE transactions ADD COLUMN matched_transaction_id INTEGER",
-    "is_credit_card_payment": "ALTER TABLE transactions ADD COLUMN is_credit_card_payment BOOLEAN DEFAULT 0",
-    "canonical_merchant": "ALTER TABLE transactions ADD COLUMN canonical_merchant VARCHAR DEFAULT ''",
-    "duplicate_group_id": "ALTER TABLE transactions ADD COLUMN duplicate_group_id VARCHAR",
+_COLUMN_MIGRATIONS = {
+    "transactions": {
+        "is_internal_transfer": "ALTER TABLE transactions ADD COLUMN is_internal_transfer BOOLEAN DEFAULT 0",
+        "matched_transaction_id": "ALTER TABLE transactions ADD COLUMN matched_transaction_id INTEGER",
+        "is_credit_card_payment": "ALTER TABLE transactions ADD COLUMN is_credit_card_payment BOOLEAN DEFAULT 0",
+        "canonical_merchant": "ALTER TABLE transactions ADD COLUMN canonical_merchant VARCHAR DEFAULT ''",
+        "duplicate_group_id": "ALTER TABLE transactions ADD COLUMN duplicate_group_id VARCHAR",
+    },
+    "plaid_items": {
+        "investments_status": "ALTER TABLE plaid_items ADD COLUMN investments_status VARCHAR",
+    },
 }
 
 
 def run_startup_migrations() -> None:
     """Add columns to pre-existing tables that Base.metadata.create_all can't add."""
     inspector = inspect(engine)
-    if "transactions" not in inspector.get_table_names():
-        return
-    existing = {col["name"] for col in inspector.get_columns("transactions")}
+    tables = set(inspector.get_table_names())
     with engine.begin() as conn:
-        for column, ddl in _TRANSACTIONS_COLUMN_MIGRATIONS.items():
-            if column not in existing:
-                conn.execute(text(ddl))
+        for table, columns in _COLUMN_MIGRATIONS.items():
+            if table not in tables:
+                continue
+            existing = {col["name"] for col in inspector.get_columns(table)}
+            for column, ddl in columns.items():
+                if column not in existing:
+                    conn.execute(text(ddl))
 
 
 def get_db():

@@ -1,11 +1,12 @@
 import logging
+from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app import analytics, plaid_client
+from app import analytics, market_data, plaid_client
 from app.database import get_db
-from app.models import Account, CardLiability, Holding, PlaidItem, Security, Transaction
+from app.models import Account, CardLiability, Holding, InvestmentTransaction, PlaidItem, Security, Transaction
 from app.routers.transactions import _upsert_transaction
 
 logger = logging.getLogger(__name__)
@@ -73,14 +74,13 @@ def _refresh_liabilities(db: Session, item: PlaidItem) -> int:
     return updated
 
 
-def _refresh_holdings(db: Session, item: PlaidItem) -> int:
-    try:
-        securities, holdings = plaid_client.get_holdings(item.access_token)
-    except Exception:
-        logger.info("Investments not available for item %s (product not granted yet)", item.item_id)
-        return 0
+INVESTMENT_HISTORY_DAYS = 730  # Plaid serves up to 24 months of investment transactions
+_CONSENT_ERRORS = {"ADDITIONAL_CONSENT_REQUIRED", "INVALID_PRODUCT"}
+_UNSUPPORTED_ERRORS = {"PRODUCTS_NOT_SUPPORTED", "NO_INVESTMENT_ACCOUNTS", "PRODUCT_NOT_ENABLED"}
 
-    security_by_plaid_id: dict[str, Security] = {}
+
+def _upsert_securities(db: Session, securities: list) -> dict[str, Security]:
+    by_plaid_id: dict[str, Security] = {}
     for sec in securities:
         record = db.query(Security).filter_by(security_id=sec.security_id).one_or_none()
         if record is None:
@@ -88,9 +88,27 @@ def _refresh_holdings(db: Session, item: PlaidItem) -> int:
             db.add(record)
         record.ticker_symbol = sec.ticker_symbol
         record.name = sec.name
-        record.type = sec.type
-        security_by_plaid_id[sec.security_id] = record
+        record.type = str(sec.type) if sec.type is not None else None
+        by_plaid_id[sec.security_id] = record
     db.flush()
+    return by_plaid_id
+
+
+def _refresh_holdings(db: Session, item: PlaidItem) -> int:
+    has_investment_accounts = any(a.type == "investment" for a in item.accounts)
+    try:
+        securities, holdings = plaid_client.get_holdings(item.access_token)
+    except Exception as exc:
+        code = plaid_client.plaid_error_code(exc)
+        if code in _CONSENT_ERRORS and has_investment_accounts:
+            item.investments_status = "consent_required"
+        elif has_investment_accounts:
+            item.investments_status = "unsupported" if code in _UNSUPPORTED_ERRORS else item.investments_status
+        logger.info("Investments not available for %s: %s", item.institution_name, code or exc)
+        return 0
+    item.investments_status = "ok"
+
+    security_by_plaid_id = _upsert_securities(db, securities)
 
     account_by_plaid_id = {a.account_id: a for a in item.accounts}
     updated = 0
@@ -111,10 +129,46 @@ def _refresh_holdings(db: Session, item: PlaidItem) -> int:
     return updated
 
 
+def _refresh_investment_transactions(db: Session, item: PlaidItem) -> int:
+    if item.investments_status != "ok":
+        return 0
+    end = date.today()
+    start = end - timedelta(days=INVESTMENT_HISTORY_DAYS)
+    try:
+        securities, txns = plaid_client.get_investment_transactions(item.access_token, start, end)
+    except Exception as exc:
+        logger.warning("Investment transactions failed for %s: %s", item.institution_name, plaid_client.plaid_error_code(exc) or exc)
+        return 0
+
+    security_by_plaid_id = _upsert_securities(db, securities)
+    account_by_plaid_id = {a.account_id: a for a in item.accounts}
+    count = 0
+    for t in txns:
+        account = account_by_plaid_id.get(t.account_id)
+        if account is None:
+            continue
+        record = db.query(InvestmentTransaction).filter_by(investment_transaction_id=t.investment_transaction_id).one_or_none()
+        if record is None:
+            record = InvestmentTransaction(investment_transaction_id=t.investment_transaction_id, account_id=account.id)
+            db.add(record)
+        security = security_by_plaid_id.get(t.security_id) if t.security_id else None
+        record.security_id = security.id if security else None
+        record.date = t.date
+        record.name = t.name or ""
+        record.type = str(t.type)
+        record.subtype = str(t.subtype)
+        record.amount = t.amount or 0.0
+        record.quantity = t.quantity
+        record.price = t.price
+        record.fees = t.fees
+        count += 1
+    return count
+
+
 @router.post("/full")
 def sync_full(db: Session = Depends(get_db)):
     items = db.query(PlaidItem).all()
-    totals = {"added": 0, "modified": 0, "removed": 0, "liabilities_updated": 0, "holdings_updated": 0}
+    totals = {"added": 0, "modified": 0, "removed": 0, "liabilities_updated": 0, "holdings_updated": 0, "investment_transactions": 0}
 
     for item in items:
         try:
@@ -129,8 +183,13 @@ def sync_full(db: Session = Depends(get_db)):
 
         totals["liabilities_updated"] += _refresh_liabilities(db, item)
         totals["holdings_updated"] += _refresh_holdings(db, item)
+        totals["investment_transactions"] += _refresh_investment_transactions(db, item)
 
     db.flush()
+    tickers = [sec.ticker_symbol for _, sec in analytics.priceable_holdings(db)]
+    if tickers:
+        prices = market_data.refresh_prices(db, tickers, date.today() - timedelta(days=analytics.PRICE_HISTORY_DAYS))
+        totals["prices_updated"] = sum(prices.values())
     analytics.backfill_canonical_merchants(db)
     analytics.reconcile_internal_transfers(db)
     analytics.detect_duplicate_groups(db)

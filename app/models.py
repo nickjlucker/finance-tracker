@@ -14,6 +14,9 @@ class PlaidItem(Base):
     access_token: Mapped[str] = mapped_column(String)
     institution_name: Mapped[str] = mapped_column(String, default="")
     transactions_cursor: Mapped[str | None] = mapped_column(String, nullable=True)
+    # "ok", "consent_required" (linked without investments permission), or
+    # "unsupported"; None until a sync has tried.
+    investments_status: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     accounts: Mapped[list["Account"]] = relationship(back_populates="item", cascade="all, delete-orphan")
@@ -128,3 +131,46 @@ class RecurringOverride(Base):
     canonical_merchant: Mapped[str] = mapped_column(String, unique=True, index=True)
     user_classification: Mapped[str] = mapped_column(String)
     set_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class InvestmentTransaction(Base):
+    """A brokerage event from Plaid Investments: buy, sell, dividend, deposit, fee..."""
+
+    __tablename__ = "investment_transactions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    investment_transaction_id: Mapped[str] = mapped_column(String, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"), index=True)
+    security_id: Mapped[int | None] = mapped_column(ForeignKey("securities.id"), nullable=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    name: Mapped[str] = mapped_column(String, default="")
+    type: Mapped[str] = mapped_column(String, default="")
+    subtype: Mapped[str] = mapped_column(String, default="")
+    # Plaid sign convention: positive = cash leaves the account (a buy),
+    # negative = cash comes in (a sale, dividend, or deposit).
+    amount: Mapped[float] = mapped_column(Float, default=0.0)
+    quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fees: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class SecurityPrice(Base):
+    """Cached daily close for a ticker from a market data provider (split-adjusted)."""
+
+    __tablename__ = "security_prices"
+    __table_args__ = (UniqueConstraint("ticker", "date", name="uq_security_price_ticker_date"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ticker: Mapped[str] = mapped_column(String, index=True)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    close: Mapped[float] = mapped_column(Float)
+    source: Mapped[str] = mapped_column(String, default="")
+
+
+class AppSetting(Base):
+    """Small key/value store for user settings (the wealth plan's targets)."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[str] = mapped_column(String, default="")

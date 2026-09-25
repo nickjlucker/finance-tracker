@@ -5,8 +5,9 @@ from datetime import date, timedelta
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app import market_data
 from app.merchant import normalize_merchant
-from app.models import Account, BalanceSnapshot, CardLiability, Holding, RecurringOverride, Transaction
+from app.models import Account, BalanceSnapshot, CardLiability, Holding, InvestmentTransaction, RecurringOverride, Security, SecurityPrice, Transaction
 
 ASSET_TYPES = {"depository", "investment"}
 LIABILITY_TYPES = {"credit", "loan"}
@@ -863,6 +864,388 @@ def forecast_cash_flow(db: Session, days: int = 30, safety_floor: float = 500.0)
     }
 
 
+# --- daily spending -------------------------------------------------------------
+
+
+def daily_spending(
+    db: Session,
+    account: Account | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    include_bills: bool = False,
+) -> dict:
+    """Spending per day, split by category, for the daily spending charts.
+
+    Fixed bills (rent, insurance, phone) are left out by default: one $2,100
+    rent day would flatten every other day in the chart, and they aren't
+    day-to-day choices. The amount left out is reported so nothing is hidden.
+    """
+    today = date.today()
+    end = min(end or today, today)
+    start = start or end - timedelta(days=29)
+    query = db.query(Transaction).filter(
+        Transaction.date >= start,
+        Transaction.date <= end,
+        Transaction.amount > 0,
+        Transaction.is_internal_transfer.is_(False),
+    )
+    if account is not None:
+        query = query.filter(Transaction.account_id == account.id)
+    txns = query.all()
+
+    bill_merchants = {r["canonical_merchant"] for r in analyze_recurring(db, "spend") if r["tier"] == "fixed_obligation"}
+    by_day: dict[date, dict[str, float]] = {start + timedelta(days=i): defaultdict(float) for i in range((end - start).days + 1)}
+    counts: Counter = Counter()
+    excluded = 0.0
+    for t in txns:
+        if not include_bills and t.canonical_merchant in bill_merchants:
+            excluded += t.amount
+            continue
+        by_day[t.date][t.category_primary] += t.amount
+        counts[t.date] += 1
+
+    days = [
+        {
+            "date": d,
+            "total": round(sum(cats.values()), 2),
+            "count": counts[d],
+            "categories": {k: round(v, 2) for k, v in sorted(cats.items(), key=lambda kv: -kv[1])},
+        }
+        for d, cats in sorted(by_day.items())
+    ]
+    category_totals: dict[str, float] = defaultdict(float)
+    for day in days:
+        for k, v in day["categories"].items():
+            category_totals[k] += v
+    total = sum(d["total"] for d in days)
+    highest = max(days, key=lambda d: d["total"], default=None)
+    return {
+        "start_date": start,
+        "end_date": end,
+        "days": days,
+        "category_totals": [{"name": k, "amount": round(v, 2)} for k, v in sorted(category_totals.items(), key=lambda kv: -kv[1])],
+        "total": round(total, 2),
+        "average_per_day": round(total / len(days), 2) if days else 0.0,
+        "highest_day": {"date": highest["date"], "total": highest["total"]} if highest and highest["total"] > 0 else None,
+        "no_spend_days": sum(1 for d in days if d["total"] == 0),
+        "bills_excluded": round(excluded, 2),
+        "include_bills": include_bills,
+    }
+
+
+# --- investments ----------------------------------------------------------------
+
+CONTRIBUTION_SUBTYPES = {"deposit", "contribution", "transfer"}
+WITHDRAWAL_SUBTYPES = {"withdrawal", "distribution"}
+INCOME_SUBTYPES = {"dividend", "qualified dividend", "non-qualified dividend", "interest", "long-term capital gain", "short-term capital gain"}
+SECURITY_TYPES = {"buy", "sell", "transfer"}
+
+
+def xirr(flows: list[tuple[date, float]]) -> float | None:
+    """Annualized money-weighted return. Flows: money in negative, value out positive."""
+    if len(flows) < 2 or not any(v > 0 for _, v in flows) or not any(v < 0 for _, v in flows):
+        return None
+    t0 = min(d for d, _ in flows)
+
+    def npv(rate: float) -> float:
+        return sum(v / (1 + rate) ** ((d - t0).days / 365.0) for d, v in flows)
+
+    lo, hi = -0.99, 10.0
+    if npv(lo) * npv(hi) > 0:
+        return None
+    for _ in range(200):  # bisection: robust where Newton can diverge
+        mid = (lo + hi) / 2
+        if npv(lo) * npv(mid) <= 0:
+            hi = mid
+        else:
+            lo = mid
+    return (lo + hi) / 2
+
+
+EMPLOYER_CONTRIBUTION_MARKERS = ("CO CONTR", "EMPLOYER", "ER CONTR", "COMPANY MATCH", "MATCH")
+
+
+def is_employer_contribution(t: "InvestmentTransaction") -> bool:
+    name = (t.name or "").upper()
+    return any(marker in name for marker in EMPLOYER_CONTRIBUTION_MARKERS)
+
+
+def adds_shares(t: "InvestmentTransaction") -> bool:
+    """Trades and in-kind contributions change a position's share count."""
+    kind, subtype = (t.type or "").lower(), (t.subtype or "").lower()
+    return bool(t.security_id is not None and t.quantity and (kind in SECURITY_TYPES or subtype == "contribution"))
+
+
+def _classify_investment_txn(t: "InvestmentTransaction") -> str:
+    subtype = (t.subtype or "").lower()
+    kind = (t.type or "").lower()
+    if kind == "fee":
+        return "fee"
+    # Contributions can land as cash (HSA deposits) or straight into a fund
+    # (401k payroll contributions carry the fund's security and share count).
+    if kind in {"cash", "transfer"} and (t.security_id is None or subtype in {"contribution", "deposit"}):
+        if subtype in WITHDRAWAL_SUBTYPES or (subtype in CONTRIBUTION_SUBTYPES and t.amount > 0):
+            return "withdrawal"
+        if subtype in CONTRIBUTION_SUBTYPES:
+            return "contribution"
+    if subtype in INCOME_SUBTYPES:
+        return "income"
+    if kind == "buy":
+        return "buy"
+    if kind == "sell":
+        return "sell"
+    return "other"
+
+
+PRICE_HISTORY_DAYS = 730
+
+
+def priceable_holdings(db: Session, account_ids: list[int] | None = None) -> list[tuple[Holding, Security]]:
+    query = db.query(Holding, Security).join(Security, Holding.security_id == Security.id)
+    if account_ids is not None:
+        query = query.filter(Holding.account_id.in_(account_ids))
+    return [
+        (h, sec)
+        for h, sec in query.all()
+        if sec.ticker_symbol and (sec.type or "").lower() not in market_data.UNPRICEABLE_TYPES
+    ]
+
+
+def portfolio_value_history(db: Session, account_ids: list[int], start: date, end: date | None = None) -> dict:
+    """Daily value of investment accounts from share counts x market closes.
+
+    Share counts are rolled back through the brokerage's trades, so with a
+    complete trade history this is the account's real value each day. Without
+    trades it prices today's positions historically (as if held throughout),
+    which the caller labels. Positions with no market price (options, cash)
+    are held at today's value.
+    """
+    end = end or date.today()
+    rows = db.query(Holding, Security).join(Security, Holding.security_id == Security.id).filter(Holding.account_id.in_(account_ids)).all()
+    if not rows:
+        return {"series": {}, "priced_share": 0.0, "unpriced": []}
+    accounts = db.query(Account).filter(Account.id.in_(account_ids)).all()
+    holdings_value = sum(h.institution_value or 0.0 for h, _ in rows)
+    cash_now = sum(a.current_balance or 0.0 for a in accounts) - holdings_value
+
+    trades = (
+        db.query(InvestmentTransaction)
+        .filter(InvestmentTransaction.account_id.in_(account_ids), InvestmentTransaction.date > start)
+        .all()
+    )
+    later_qty: dict[int, dict[date, float]] = defaultdict(lambda: defaultdict(float))
+    later_cash: dict[date, float] = defaultdict(float)
+    for t in trades:
+        if adds_shares(t):
+            later_qty[t.security_id][t.date] += t.quantity
+        later_cash[t.date] += t.amount  # Plaid: positive = cash left the account
+
+    priced, unpriced_value, unpriced = [], 0.0, []
+    for h, sec in rows:
+        prices = (
+            market_data.price_series(db, sec.ticker_symbol, start, end)
+            if sec.ticker_symbol and (sec.type or "").lower() not in market_data.UNPRICEABLE_TYPES
+            else {}
+        )
+        if prices:
+            priced.append((h, sec, prices))
+        else:
+            unpriced_value += h.institution_value or 0.0
+            unpriced.append(sec.ticker_symbol or sec.name or "position")
+
+    series: dict[date, float] = {}
+    day = end
+    qty = {h.security_id: h.quantity or 0.0 for h, _, _ in priced}
+    cash = cash_now
+    while day >= start:
+        value = cash + unpriced_value
+        for h, sec, prices in priced:
+            if day in prices:
+                value += qty[h.security_id] * prices[day]
+        series[day] = value
+        # Step to the previous day: undo this day's trades.
+        for h, _, _ in priced:
+            qty[h.security_id] -= later_qty[h.security_id].get(day, 0.0)
+        cash += later_cash.get(day, 0.0)
+        day -= timedelta(days=1)
+    priced_value = sum(h.institution_value or 0.0 for h, _, _ in priced)
+    return {
+        "series": dict(sorted(series.items())),
+        "priced_share": priced_value / holdings_value if holdings_value else 0.0,
+        "unpriced": unpriced,
+    }
+
+
+def _price_return(db: Session, ticker: str, days: int, today: date) -> float | None:
+    prices = market_data.price_series(db, ticker, today - timedelta(days=days), today)
+    if not prices:
+        return None
+    first = prices.get(today - timedelta(days=days))
+    last = prices.get(today) or prices[max(prices)]
+    return (last / first - 1) if first else None
+
+
+def investment_performance(db: Session) -> dict:
+    """What went into your investment accounts and what it has grown to."""
+    accounts = db.query(Account).filter(Account.type == "investment").all()
+    ids = [a.id for a in accounts]
+    items = {a.item_id: a.item for a in accounts if a.item}
+    value = sum(a.current_balance or 0.0 for a in accounts)
+    today = date.today()
+
+    holdings_rows = (
+        db.query(Holding, Security, Account)
+        .join(Security, Holding.security_id == Security.id)
+        .join(Account, Holding.account_id == Account.id)
+        .filter(Holding.account_id.in_(ids))
+        .all()
+        if ids
+        else []
+    )
+    holdings = []
+    for h, sec, acct in holdings_rows:
+        v = h.institution_value or 0.0
+        gain = v - h.cost_basis if h.cost_basis is not None else None
+        holdings.append(
+            {
+                "ticker": sec.ticker_symbol or (sec.type or "").title() or "Position",
+                "name": sec.name,
+                "type": sec.type,
+                "account_name": acct.name,
+                "quantity": h.quantity,
+                "price": h.institution_price,
+                "value": round(v, 2),
+                "cost_basis": h.cost_basis,
+                "gain": round(gain, 2) if gain is not None else None,
+                "gain_pct": round(gain / h.cost_basis, 4) if gain is not None and h.cost_basis else None,
+                "weight": round(v / value, 4) if value else None,
+            }
+        )
+    for (h, sec, _), out in zip(holdings_rows, holdings):
+        priceable = sec.ticker_symbol and (sec.type or "").lower() not in market_data.UNPRICEABLE_TYPES
+        out["return_1m"] = _price_return(db, sec.ticker_symbol, 30, today) if priceable else None
+        out["return_1y"] = _price_return(db, sec.ticker_symbol, 365, today) if priceable else None
+    holdings.sort(key=lambda h: -h["value"])
+    with_basis = [h for h in holdings if h["cost_basis"] is not None]
+    cost_basis_total = sum(h["cost_basis"] for h in with_basis)
+    unrealized = sum(h["gain"] for h in with_basis) if with_basis else None
+
+    txns = (
+        db.query(InvestmentTransaction).filter(InvestmentTransaction.account_id.in_(ids)).order_by(InvestmentTransaction.date).all()
+        if ids
+        else []
+    )
+    flows: list[tuple[date, float]] = []  # + contributed, - withdrawn
+    dividends = fees = 0.0
+    buys = sells = 0
+    quantity_change: dict[int, float] = defaultdict(float)
+    for t in txns:
+        kind = _classify_investment_txn(t)
+        if kind == "contribution":
+            flows.append((t.date, abs(t.amount)))
+        elif kind == "withdrawal":
+            flows.append((t.date, -abs(t.amount)))
+        elif kind == "income":
+            dividends += abs(t.amount)
+        elif kind == "fee":
+            fees += abs(t.amount)
+        elif kind == "buy":
+            buys += 1
+        elif kind == "sell":
+            sells += 1
+        if adds_shares(t):
+            quantity_change[t.security_id] += t.quantity
+
+    # Bank-side transfers into investing cover brokerages that don't report
+    # their deposits (Webull shares balance and holdings but not cash moves).
+    # A transfer that matches a brokerage-reported deposit is the same money.
+    reported = list(flows)
+    bank_added = 0
+    for day, amount in (
+        db.query(Transaction.date, Transaction.amount)
+        .filter(Transaction.category_detailed == INVESTMENT_CONTRIBUTION_CATEGORY, Transaction.pending.is_(False))
+        .order_by(Transaction.date)
+    ):
+        if any(abs(v - amount) <= 1.0 and abs((d - day).days) <= 5 for d, v in reported):
+            continue
+        flows.append((day, amount))
+        bank_added += 1
+    flows.sort(key=lambda f: f[0])
+    source = "brokerage" if reported and not bank_added else ("bank_transfers" if bank_added and not reported else "mixed")
+
+    net_contributed = sum(v for _, v in flows)
+
+    # Complete history = every current position is explained by buys inside the
+    # window (quantities roll back to zero). Only then is value - contributions
+    # the whole gain and the annualized return meaningful.
+    full_history = False
+    if txns and holdings_rows:
+        full_history = all(abs((h.quantity or 0.0) - quantity_change.get(h.security_id, 0.0)) < 1e-6 for h, _, _ in holdings_rows)
+    annualized = xirr([(d, -v) for d, v in flows] + [(today, value)]) if full_history else None
+
+    cumulative, running = [], 0.0
+    for d, v in flows:
+        running += v
+        cumulative.append({"date": d, "net_contributed": round(running, 2)})
+
+    snaps = (
+        db.query(BalanceSnapshot.recorded_at, func.sum(BalanceSnapshot.balance))
+        .filter(BalanceSnapshot.account_id.in_(ids))
+        .group_by(BalanceSnapshot.recorded_at)
+        .order_by(BalanceSnapshot.recorded_at)
+        .all()
+        if ids
+        else []
+    )
+
+    priced = portfolio_value_history(db, ids, today - timedelta(days=PRICE_HISTORY_DAYS), today) if ids else {"series": {}, "priced_share": 0.0, "unpriced": []}
+    priced_points = [{"date": d, "value": round(v, 2)} for d, v in priced["series"].items()]
+    priced_returns = {}
+    for label, days in (("1m", 30), ("3m", 91), ("6m", 182), ("1y", 365), ("2y", 730)):
+        past = priced["series"].get(today - timedelta(days=days))
+        now_v = priced["series"].get(today)
+        if past and now_v:
+            priced_returns[label] = round(now_v / past - 1, 4)
+
+    statuses = {i.investments_status for i in items.values()}
+    access = "consent_required" if "consent_required" in statuses else ("ok" if "ok" in statuses else (statuses.pop() if statuses else None))
+    return {
+        "access": access,
+        "items_needing_consent": [{"item_id": i.item_id, "institution_name": i.institution_name} for i in items.values() if i.investments_status == "consent_required"],
+        "accounts": [{"name": a.name, "institution_name": a.item.institution_name if a.item else "", "balance": a.current_balance} for a in accounts],
+        "value": round(value, 2),
+        "holdings": holdings,
+        "cost_basis_total": round(cost_basis_total, 2) if with_basis else None,
+        "unrealized_gain": round(unrealized, 2) if unrealized is not None else None,
+        "net_contributed": round(net_contributed, 2),
+        "contributions_source": source,
+        "contributions": cumulative,
+        "history_start": flows[0][0] if flows else (txns[0].date if txns else None),
+        "full_history": full_history,
+        "total_gain": round(value - net_contributed, 2) if full_history else None,
+        "annualized_return": round(annualized, 4) if annualized is not None else None,
+        "dividends": round(dividends, 2),
+        "fees": round(fees, 2),
+        "trade_counts": {"buys": buys, "sells": sells},
+        "value_history": [{"date": d, "value": round(v, 2)} for d, v in snaps],
+        "priced_history": priced_points,
+        # "trades": share counts follow the brokerage's trade history, so the
+        # line is the real account value; "current_positions": today's shares
+        # priced back in time (as if held throughout).
+        "priced_history_mode": "trades" if full_history else "current_positions",
+        "priced_share": round(priced["priced_share"], 4),
+        "unpriced": priced["unpriced"],
+        "priced_returns": priced_returns,
+        "price_source": _latest_price_source(db),
+    }
+
+
+def _latest_price_source(db: Session) -> str | None:
+    row = db.query(SecurityPrice.source).order_by(SecurityPrice.date.desc()).first()
+    return row[0] if row else None
+
+
+
 # --- per-account summary (Transactions page) ------------------------------------
 
 ACCOUNT_SUMMARY_DEFAULT_DAYS = 30
@@ -1161,11 +1544,39 @@ def reconstructed_net_worth(db: Session, anchor: date | None = None) -> dict[dat
     balance_only_investments = [a for a in accounts if a.type in ASSET_TYPES - {"depository"} and not daily.get(a.id)]
 
     balances = {a.id: anchor_balances.get(a.id, a.current_balance or 0.0) for a in accounts}
+
+    # Brokerages with market prices: use the priced value for each day, shifted
+    # so it meets the anchor snapshot exactly (no jump where real data starts).
+    priced_investments: dict[int, dict[date, float]] = {}
+    for a in accounts:
+        if a.type != "investment":
+            continue
+        priced = portfolio_value_history(db, [a.id], first, today)["series"]
+        if priced and today in priced:
+            shift = balances[a.id] - priced[today]
+            has_trades = (
+                db.query(InvestmentTransaction.id)
+                .filter(InvestmentTransaction.account_id == a.id, InvestmentTransaction.type.in_(["buy", "sell"]))
+                .first()
+                is not None
+            )
+            adjusted = {}
+            for d, v in priced.items():
+                # Without the brokerage's trades, today's shares are assumed held
+                # all along; money deposited after day d wasn't invested yet (and
+                # is already added back to checking), so take it out.
+                later = 0.0 if has_trades else sum(amt for cd, amt in contributions.items() if d < cd <= today)
+                adjusted[d] = v + shift - later
+            priced_investments[a.id] = adjusted
+    balance_only_investments = [a for a in balance_only_investments if a.id not in priced_investments]
     result: dict[date, float] = {}
     day = today
     while day >= first:
         net = 0.0
         for a in accounts:
+            if a.id in priced_investments:
+                net += priced_investments[a.id].get(day, balances[a.id])
+                continue
             net += -balances[a.id] if a.type in LIABILITY_TYPES else balances[a.id]
         result[day] = net
         # Step to the end of the previous day by undoing today's activity.

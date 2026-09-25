@@ -6,6 +6,61 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Wealth plan** (`/plan`, `GET /api/plan`, `PUT /api/plan/settings`):
+  - Per-paycheck investing target (minimum and stretch, default $500 / $750)
+    scored for every pay period, with an on-target streak.
+  - "This paycheck" instruction: how much to move to savings vs. investing,
+    filling a cash buffer (months of essential costs) first. Also shown at
+    the top of the Dashboard.
+  - Investing per pay period split into money moved from checking, 401(k)
+    payroll contributions, your HSA contributions, and employer money.
+  - The gap: monthly take-home vs. spending, what the guardrails free up,
+    and how that compares to the minimum and stretch targets.
+  - Spending guardrails from the audit (Amazon, groceries, dining,
+    rideshare, games, other shopping, ATM cash) with editable monthly caps,
+    month-to-date pace, and biggest merchants.
+  - Opportunities: HSA-reimbursable medical costs, idle HSA cash, HSA and
+    401(k) room against 2026 limits, Roth IRA, three-paycheck months, and
+    rent as a share of take-home.
+  - Settings stored in a new `app_settings` table.
+- **Investments view** on the Dashboard: value, net contributed, total
+  growth, money-weighted annualized return (XIRR), dividends and fees, a
+  contributed-vs-value chart, and holdings with cost basis, gain, and
+  weight. Growth and return are only claimed when the history is complete
+  (every current position is explained by trades in the window).
+  `GET /api/dashboard/investments`.
+- **Grant investment access** for brokerages linked with balance access only
+  (Webull): Plaid Link update mode requests the Investments product on the
+  existing connection (`POST /api/link/token/update/{item_id}`), then syncs.
+  Each institution's investments status is stored (`plaid_items.investments_status`).
+- Sync pulls up to 24 months of investment transactions (buys, sells,
+  dividends, deposits, fees) into a new `investment_transactions` table.
+- The net worth chart says when a brokerage's market growth is missing.
+- **Market data** (`app/market_data.py`): daily split-adjusted closes from
+  Yahoo Finance (no key), or Tiingo first when `TIINGO_API_KEY` is set, with
+  the other as fallback. Cached in `security_prices` and topped up on sync
+  (2 years back).
+- Portfolio value history from share counts × closes. With the brokerage's
+  trades, share counts roll back through them (real account value);
+  without, today's positions are priced back in time and labeled as such.
+  Positions with no market price (options) are held at today's value.
+- Investments card: value chart with 1M–2Y ranges, 1M/3M/1Y returns, and
+  1M and 1Y price change per holding.
+- Reconstructed net worth prices brokerage balances from market closes
+  (shifted to meet the first real snapshot, and net of deposits made later)
+  instead of holding them flat.
+- **Daily spending by category** on the Dashboard (last 30 days) and the
+  Transactions page (follows the account and date filters): stacked bars per
+  day (per week past ~3 months) with a hover breakdown, an average line, a
+  legend with category totals, and average per day, highest day, no-spend
+  days, and the priciest weekday. Fixed bills are set aside by default (the
+  amount is shown) with an "Include bills" toggle. Clicking a bar shows that
+  day's transactions. Category colors come from a fixed, colorblind-validated
+  8-slot order; everything else folds into "Other". `GET /api/transactions/daily`.
+
+## 2026-09-25 (`4da6fbb`)
+
+### Added
 - **Merchant normalization** (`app/merchant.py`): strips ACH/processor noise
   (`DES:`, `ID:`, `PPD`, store numbers, `*REF` suffixes) and applies curated
   aliases (e.g. Bilt Rent, Uber) so the same merchant groups together.
@@ -101,6 +156,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   to existing databases.
 
 ### Fixed
+- 401(k) payroll contributions that land directly in a fund (with shares)
+  are counted as contributions; employer contributions are identified; bank
+  transfers into investing are combined with brokerage-reported deposits
+  without double counting.
 - Credit card payments no longer look like income on the Transactions page.
   The card-side leg (which Chase labels `LOAN_DISBURSEMENTS` and Bank of
   America `TRANSFER_IN`) is paired with the checking payment by amount and

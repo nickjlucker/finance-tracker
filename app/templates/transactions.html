@@ -10,6 +10,17 @@
 
 <div id="summary" class="grid" style="margin-bottom:16px"></div>
 
+<section class="card" style="margin-bottom:16px">
+  <div class="card-head">
+    <div>
+      <h2 class="card-title" id="daily-title">Daily spending</h2>
+      <div class="card-sub" id="daily-sub">&nbsp;</div>
+    </div>
+    <label class="input-group toggle"><input type="checkbox" id="daily-include-bills" /> Include bills</label>
+  </div>
+  <div id="daily-body"><span class="skeleton" style="height:200px"></span></div>
+</section>
+
 <section class="card flush">
   <div class="toolbar">
     <input class="input search" type="search" id="filter-q" placeholder="Search merchant or description…" />
@@ -18,6 +29,7 @@
     <label class="input-group">From <input class="input" type="date" id="filter-start" style="width:auto" /></label>
     <label class="input-group">To <input class="input" type="date" id="filter-end" style="width:auto" /></label>
     <label class="input-group toggle"><input type="checkbox" id="filter-hide-internal" /> Hide card payments &amp; transfers</label>
+    <button class="btn secondary" id="day-chip" type="button" hidden title="Show all days again"></button>
     <button class="btn ghost" id="clear-filters" type="button" hidden>Clear</button>
   </div>
   <div class="table-wrap">
@@ -45,6 +57,7 @@
 <script>
 const LIMIT = 50;
 let offset = 0;
+let pickedDay = null;
 let lastDay = null;
 let loaded = 0;
 
@@ -57,6 +70,14 @@ function currentFilters() {
     const v = document.getElementById(id).value.trim();
     if (v) params.set(map[id], v);
   }
+  // A day picked on the chart narrows the table without changing the summary's range.
+  if (pickedDay) {
+    params.set("start_date", pickedDay.start);
+    params.set("end_date", pickedDay.end);
+  }
+  const chip = document.getElementById("day-chip");
+  chip.hidden = !pickedDay;
+  if (pickedDay) chip.textContent = `${pickedDay.start === pickedDay.end ? fmtDate(pickedDay.start, { weekday: "short", month: "short", day: "numeric" }) : `${fmtDate(pickedDay.start)} – ${fmtDate(pickedDay.end)}`} ✕`;
   document.getElementById("clear-filters").hidden = [...params.keys()].length === 0;
   if (document.getElementById("filter-hide-internal").checked) params.set("include_internal", "false");
   return params;
@@ -290,8 +311,34 @@ async function loadSummary() {
   );
 }
 
+function summaryParams() {
+  const params = new URLSearchParams();
+  for (const [id, key] of [["filter-account", "account_id"], ["filter-start", "start_date"], ["filter-end", "end_date"]]) {
+    const v = document.getElementById(id).value;
+    if (v) params.set(key, v);
+  }
+  return params;
+}
+
+async function loadDaily() {
+  const params = summaryParams();
+  params.set("include_bills", document.getElementById("daily-include-bills").checked);
+  const data = await apiFetch(`/api/transactions/daily?${params.toString()}`);
+  const custom = document.getElementById("filter-start").value || document.getElementById("filter-end").value;
+  document.getElementById("daily-title").textContent = `Daily spending · ${custom ? `${fmtDate(data.start_date)} – ${fmtDate(data.end_date)}` : `last ${data.days.length} days`}`;
+  document.getElementById("daily-sub").textContent = `${dailySpendingSub(data)} · click a bar to see that day`;
+  const body = document.getElementById("daily-body");
+  body.innerHTML = dailySpendingHtml(data, body.clientWidth);
+  wireDailyStack(body, (start, end) => {
+    pickedDay = { start, end };
+    loadTransactions(false).catch((e) => showToast(e.message));
+    document.querySelector(".card.flush").scrollIntoView({ behavior: "smooth", block: "start" });
+  });
+}
+
 function reloadAll() {
-  return Promise.all([loadSummary(), loadTransactions(false)]).catch((e) => showToast(e.message));
+  pickedDay = null;
+  return Promise.all([loadSummary(), loadDaily(), loadTransactions(false)]).catch((e) => showToast(e.message));
 }
 
 let searchTimer;
@@ -308,14 +355,28 @@ document.getElementById("clear-filters").addEventListener("click", () => {
   FILTER_IDS.forEach((id) => (document.getElementById(id).value = ""));
   reloadAll();
 });
+document.getElementById("day-chip").addEventListener("click", () => {
+  pickedDay = null;
+  loadTransactions(false).catch((e) => showToast(e.message));
+});
+document.getElementById("daily-include-bills").addEventListener("change", () => loadDaily().catch((e) => showToast(e.message)));
 document.getElementById("load-more-btn").addEventListener("click", () => loadTransactions(true).catch((e) => showToast(e.message)));
 
 onDataChanged = reloadAll;
 // Deep link: /transactions?account=<plaid account id> opens that account.
-const initialAccount = new URLSearchParams(location.search).get("account");
+// /transactions?start=…&end=… (from the dashboard's daily chart) opens on that day.
+const query = new URLSearchParams(location.search);
+const initialAccount = query.get("account");
 loadFilterOptions()
   .then(() => { if (initialAccount) document.getElementById("filter-account").value = initialAccount; })
   .catch(() => {})
-  .finally(reloadAll);
+  .finally(() => {
+    reloadAll().then(() => {
+      if (query.get("start")) {
+        pickedDay = { start: query.get("start"), end: query.get("end") || query.get("start") };
+        loadTransactions(false).catch((e) => showToast(e.message));
+      }
+    });
+  });
 </script>
 {% endblock %}

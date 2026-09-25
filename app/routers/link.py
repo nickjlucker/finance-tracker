@@ -20,6 +20,18 @@ def create_token():
     return LinkTokenCreateResponse(link_token=link_token)
 
 
+@router.post("/token/update/{item_id}", response_model=LinkTokenCreateResponse)
+def create_update_token(item_id: str, product: str = "investments", db: Session = Depends(get_db)):
+    item = db.query(PlaidItem).filter_by(item_id=item_id).one_or_none()
+    if item is None:
+        raise HTTPException(status_code=404, detail="Institution not found")
+    try:
+        link_token = plaid_client.create_update_link_token(DEMO_USER_ID, item.access_token, [product])
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Plaid error: {exc}") from exc
+    return LinkTokenCreateResponse(link_token=link_token)
+
+
 @router.post("/exchange")
 def exchange_token(payload: PublicTokenExchangeRequest, db: Session = Depends(get_db)):
     try:

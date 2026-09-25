@@ -135,6 +135,22 @@ def transactions_summary(
     return analytics.account_summary(db, account, start_date, end_date)
 
 
+@router.get("/daily")
+def transactions_daily(
+    db: Session = Depends(get_db),
+    account_id: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    include_bills: bool = False,
+):
+    account = None
+    if account_id:
+        account = db.query(Account).filter_by(account_id=account_id).one_or_none()
+        if account is None:
+            raise HTTPException(status_code=404, detail="Account not found")
+    return analytics.daily_spending(db, account, start_date, end_date, include_bills)
+
+
 @router.get("/categories")
 def list_categories(db: Session = Depends(get_db)):
     rows = db.query(Transaction.category_primary).distinct().all()

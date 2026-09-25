@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     plaid_products: str = "transactions"
     plaid_country_codes: str = "US"
     database_url: str = "sqlite:///./finance.db"
+    # Optional: a Tiingo key makes Tiingo the primary price source, with
+    # Yahoo Finance (no key) as the fallback.
+    tiingo_api_key: str = ""
 
     @property
     def plaid_products_list(self) -> list[str]:

@@ -177,10 +177,10 @@ function niceTicks(min, max, count = 4) {
   return ticks;
 }
 
-function _yGrid(ticks, y, padL) {
+function _yGrid(ticks, y, padL, width = CHART_W) {
   return ticks
     .map((t) => `
-      <line x1="${padL}" x2="${CHART_W - 8}" y1="${y(t)}" y2="${y(t)}" stroke="${t === 0 ? "var(--baseline)" : "var(--gridline)"}" />
+      <line x1="${padL}" x2="${width - 8}" y1="${y(t)}" y2="${y(t)}" stroke="${t === 0 ? "var(--baseline)" : "var(--gridline)"}" />
       <text x="${padL - 8}" y="${y(t) + 4}" text-anchor="end" class="axis">${fmtAxisMoney(t)}</text>`)
     .join("");
 }
@@ -266,7 +266,7 @@ function svgGroupedBars(rows, { height = 240 } = {}) {
 // Time-scaled line chart: history (estimated points drawn lighter) plus an
 // optional dashed projection. Returns markup; call wireTimeChart() after
 // inserting it to enable the hover readout.
-function svgTimeChart(history, projection = [], { height = 230 } = {}) {
+function svgTimeChart(history, projection = [], { height = 230, width = CHART_W } = {}) {
   if (!history || history.length < 2) return "";
   const padL = 56, padR = 12, padT = 14, padB = 26;
   const pts = history.map((p) => ({ t: new Date(p.date + "T00:00:00").getTime(), v: p.value, est: p.estimated, date: p.date }));
@@ -278,7 +278,7 @@ function svgTimeChart(history, projection = [], { height = 230 } = {}) {
   const pad = (hi - lo) * 0.08 || Math.abs(hi) * 0.02 || 1;
   const ticks = niceTicks(lo - pad, hi + pad);
   const minY = ticks[0], maxY = ticks[ticks.length - 1];
-  const x = (t) => padL + ((t - t0) / (t1 - t0 || 1)) * (CHART_W - padL - padR);
+  const x = (t) => padL + ((t - t0) / (t1 - t0 || 1)) * (width - padL - padR);
   const y = (v) => padT + (1 - (v - minY) / (maxY - minY || 1)) * (height - padT - padB);
   const spanDays = (t1 - t0) / 86400000;
   const fmtTick = (t) => new Date(t).toLocaleDateString("en-US", spanDays > 400 ? { month: "short", year: "numeric" } : { month: "short", day: "numeric" });
@@ -299,12 +299,12 @@ function svgTimeChart(history, projection = [], { height = 230 } = {}) {
   const gid = `g${Math.random().toString(36).slice(2, 8)}`;
   const data = encodeURIComponent(JSON.stringify(all.map((p) => [p.t, p.v, p.est ? 1 : p.proj ? 2 : 0, p.date])));
   return `
-    <div class="time-chart" data-points="${data}" data-t0="${t0}" data-t1="${t1}" data-miny="${minY}" data-maxy="${maxY}" data-h="${height}" data-padl="${padL}" data-padr="${padR}" data-padt="${padT}" data-padb="${padB}">
-      <svg class="chart" viewBox="0 0 ${CHART_W} ${height}" role="img">
+    <div class="time-chart" data-points="${data}" data-t0="${t0}" data-t1="${t1}" data-miny="${minY}" data-maxy="${maxY}" data-h="${height}" data-w="${width}" data-padl="${padL}" data-padr="${padR}" data-padt="${padT}" data-padb="${padB}">
+      <svg class="chart" viewBox="0 0 ${width} ${height}" role="img">
         <defs><linearGradient id="${gid}" x1="0" x2="0" y1="0" y2="1">
           <stop offset="0" stop-color="var(--series-1)" stop-opacity="0.14" /><stop offset="1" stop-color="var(--series-1)" stop-opacity="0" />
         </linearGradient></defs>
-        ${_yGrid(ticks, y, padL)}
+        ${_yGrid(ticks, y, padL, width)}
         <path d="${area}" fill="url(#${gid})" />
         ${estPart.length > 1 ? `<path d="${path(estPart)}" fill="none" stroke="var(--series-1)" stroke-opacity="0.55" stroke-width="2" stroke-linejoin="round" />` : ""}
         ${realPart.length > 1 ? `<path d="${path(realPart)}" fill="none" stroke="var(--series-1)" stroke-width="2.25" stroke-linejoin="round" />` : ""}
@@ -327,12 +327,13 @@ function wireTimeChart(container) {
   const svg = wrap.querySelector("svg");
   const hover = svg.querySelector(".hover");
   const tip = wrap.querySelector(".chart-tip");
-  const toX = (t) => d.padl + ((t - d.t0) / (d.t1 - d.t0 || 1)) * (CHART_W - d.padl - d.padr);
+  const W = d.w || CHART_W;
+  const toX = (t) => d.padl + ((t - d.t0) / (d.t1 - d.t0 || 1)) * (W - d.padl - d.padr);
   const toY = (v) => d.padt + (1 - (v - d.miny) / (d.maxy - d.miny || 1)) * (d.h - d.padt - d.padb);
 
   svg.addEventListener("mousemove", (e) => {
     const rect = svg.getBoundingClientRect();
-    const vx = ((e.clientX - rect.left) / rect.width) * CHART_W;
+    const vx = ((e.clientX - rect.left) / rect.width) * W;
     let best = pts[0];
     for (const p of pts) if (Math.abs(toX(p[0]) - vx) < Math.abs(toX(best[0]) - vx)) best = p;
     const px = toX(best[0]), py = toY(best[1]);
@@ -346,7 +347,7 @@ function wireTimeChart(container) {
     const kind = best[2] === 1 ? "estimated" : best[2] === 2 ? "projected" : "synced";
     tip.innerHTML = `<strong>${fmtMoneyWhole(best[1])}</strong><span>${fmtDate(best[3], { month: "short", day: "numeric", year: "numeric" })} · ${kind}</span>`;
     tip.hidden = false;
-    const left = (px / CHART_W) * rect.width;
+    const left = (px / W) * rect.width;
     tip.style.left = `${Math.min(Math.max(left, 60), rect.width - 60)}px`;
     tip.style.top = `${(py / d.h) * rect.height - 8}px`;
   });
@@ -354,4 +355,212 @@ function wireTimeChart(container) {
     hover.setAttribute("visibility", "hidden");
     tip.hidden = true;
   });
+}
+
+// --- daily spending by category ------------------------------------------------
+
+const CATEGORY_SLOTS = [
+  "FOOD_AND_DRINK", "GENERAL_MERCHANDISE", "TRANSPORTATION", "ENTERTAINMENT",
+  "MEDICAL", "RENT_AND_UTILITIES", "GENERAL_SERVICES", "TRAVEL",
+];
+
+function categoryColor(cat) {
+  const i = CATEGORY_SLOTS.indexOf(cat);
+  return i === -1 ? "var(--cat-other)" : `var(--cat-${i + 1})`;
+}
+
+// Folds categories without a fixed color into "OTHER" so no hue is generated.
+function slotted(categories) {
+  const out = {};
+  for (const [k, v] of Object.entries(categories)) {
+    const key = CATEGORY_SLOTS.includes(k) ? k : "OTHER";
+    out[key] = (out[key] || 0) + v;
+  }
+  return out;
+}
+
+const STACK_ORDER = [...CATEGORY_SLOTS, "OTHER"];
+
+function weekly(days) {
+  const weeks = [];
+  for (let i = 0; i < days.length; i += 7) {
+    const chunk = days.slice(i, i + 7);
+    const cats = {};
+    chunk.forEach((d) => Object.entries(d.categories).forEach(([k, v]) => (cats[k] = (cats[k] || 0) + v)));
+    weeks.push({ date: chunk[0].date, end: chunk[chunk.length - 1].date, total: chunk.reduce((s, d) => s + d.total, 0), count: chunk.reduce((s, d) => s + d.count, 0), categories: cats });
+  }
+  return weeks;
+}
+
+// width = the container's pixel width, so one viewBox unit is one pixel and
+// labels stay 11px at any card size (a fixed viewBox would scale text up).
+function svgDailyStack(rawDays, { height = 220, width = CHART_W } = {}) {
+  const grouped = rawDays.length > 92;
+  const days = (grouped ? weekly(rawDays) : rawDays).map((d) => ({ ...d, slots: slotted(d.categories) }));
+  const padL = 52, padR = 8, padT = 12, padB = 26;
+  const ticks = niceTicks(0, Math.max(1, ...days.map((d) => d.total)));
+  const maxY = ticks[ticks.length - 1];
+  const y = (v) => padT + (1 - v / maxY) * (height - padT - padB);
+  const slot = (width - padL - padR) / days.length;
+  const barW = Math.max(2, Math.min(28, slot * 0.72));
+  const GAP = 2; // surface gap between stacked segments
+
+  let bars = "";
+  let hits = "";
+  days.forEach((d, i) => {
+    const x = padL + slot * i + (slot - barW) / 2;
+    const segs = STACK_ORDER.filter((k) => d.slots[k] > 0);
+    let acc = 0;
+    segs.forEach((k, si) => {
+      const v = d.slots[k];
+      const y0 = y(acc), y1 = y(acc + v);
+      acc += v;
+      const top = si === segs.length - 1;
+      const h = Math.max(1, y0 - y1 - (top ? 0 : GAP));
+      const yTop = y0 - h;
+      const r = top ? Math.min(4, barW / 2, h) : 0;
+      // Rounded data-end on the top segment only; the base sits on the axis.
+      bars += r
+        ? `<path d="M${x},${y0} V${yTop + r} Q${x},${yTop} ${x + r},${yTop} H${x + barW - r} Q${x + barW},${yTop} ${x + barW},${yTop + r} V${y0} Z" fill="${categoryColor(k === "OTHER" ? "" : k)}" />`
+        : `<rect x="${x}" y="${yTop}" width="${barW}" height="${h}" fill="${categoryColor(k === "OTHER" ? "" : k)}" />`;
+    });
+    hits += `<rect class="hit" data-i="${i}" x="${padL + slot * i}" y="${padT}" width="${slot}" height="${height - padT - padB}" fill="transparent" />
+      <rect class="col-hl" x="${padL + slot * i}" y="${padT}" width="${slot}" height="${height - padT - padB}" fill="var(--text)" fill-opacity="0.05" />`;
+  });
+
+  const every = Math.ceil(days.length / Math.max(3, Math.floor(width / 110)));
+  const xLabels = days
+    .map((d, i) => (i % every === 0 || i === days.length - 1) && !(i !== days.length - 1 && days.length - 1 - i < every / 2)
+      ? `<text x="${padL + slot * (i + 0.5)}" y="${height - 6}" text-anchor="middle" class="axis">${fmtDate(d.date)}</text>`
+      : "")
+    .join("");
+  const avg = rawDays.reduce((s, d) => s + d.total, 0) / (rawDays.length || 1) * (grouped ? 7 : 1);
+  const avgLine = avg > 0
+    ? `<line x1="${padL}" x2="${width - padR}" y1="${y(avg)}" y2="${y(avg)}" stroke="var(--text-3)" stroke-dasharray="3 4" />
+       <text x="${padL + 4}" y="${y(avg) - 5}" class="axis avg-label">avg ${fmtMoneyWhole(avg)}${grouped ? "/wk" : "/day"}</text>`
+    : "";
+
+  const data = encodeURIComponent(JSON.stringify(days.map((d) => ({ date: d.date, end: d.end, total: d.total, count: d.count, slots: d.slots }))));
+  return `<div class="daily-chart" data-days="${data}" data-grouped="${grouped ? 1 : 0}">
+    <svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Spending per ${grouped ? "week" : "day"} by category">
+      ${_yGrid(ticks, y, padL, width)}${bars}${avgLine}${xLabels}${hits}
+    </svg>
+    <div class="chart-tip wide" hidden></div>
+  </div>`;
+}
+
+function wireDailyStack(container, onPick) {
+  const wrap = container.querySelector(".daily-chart");
+  if (!wrap) return;
+  const days = JSON.parse(decodeURIComponent(wrap.dataset.days));
+  const grouped = wrap.dataset.grouped === "1";
+  const tip = wrap.querySelector(".chart-tip");
+  const svg = wrap.querySelector("svg");
+  wrap.querySelectorAll(".hit").forEach((hit) => {
+    const d = days[Number(hit.dataset.i)];
+    hit.addEventListener("mouseenter", () => {
+      const rows = STACK_ORDER.filter((k) => d.slots[k] > 0)
+        .sort((a, b) => d.slots[b] - d.slots[a])
+        .map((k) => `<div class="tip-row"><span><i style="background:${categoryColor(k === "OTHER" ? "" : k)}"></i>${k === "OTHER" ? "Other" : categoryLabel(k)}</span><span>${fmtMoney(d.slots[k])}</span></div>`)
+        .join("");
+      const label = grouped
+        ? `${fmtDate(d.date)} – ${fmtDate(d.end)}`
+        : fmtDate(d.date, { weekday: "short", month: "short", day: "numeric" });
+      tip.innerHTML = `<div class="tip-head"><strong>${label}</strong><strong>${fmtMoney(d.total)}</strong></div>${rows || '<div class="tip-row"><span>No spending</span></div>'}`;
+      tip.hidden = false;
+      const rect = svg.getBoundingClientRect();
+      const hb = hit.getBoundingClientRect();
+      tip.style.left = `${Math.min(Math.max(hb.left - rect.left + hb.width / 2, 95), rect.width - 95)}px`;
+      tip.style.top = `${rect.height * 0.12}px`;
+      tip.style.transform = "translate(-50%, 0)";
+    });
+    hit.addEventListener("mouseleave", () => (tip.hidden = true));
+    if (onPick) hit.addEventListener("click", () => onPick(d.date, grouped ? d.end : d.date));
+  });
+}
+
+function dailySpendingHtml(data, width = CHART_W) {
+  const busiest = (() => {
+    const sums = Array(7).fill(0), n = Array(7).fill(0);
+    data.days.forEach((d) => { const w = new Date(d.date + "T00:00:00").getDay(); sums[w] += d.total; n[w] += 1; });
+    let best = -1;
+    sums.forEach((s, w) => { if (n[w] && (best === -1 || s / n[w] > sums[best] / n[best])) best = w; });
+    return best === -1 ? null : { day: ["Sundays", "Mondays", "Tuesdays", "Wednesdays", "Thursdays", "Fridays", "Saturdays"][best], avg: sums[best] / n[best] };
+  })();
+  const totals = {};
+  data.category_totals.forEach((c) => { const k = CATEGORY_SLOTS.includes(c.name) ? c.name : "OTHER"; totals[k] = (totals[k] || 0) + c.amount; });
+  const legend = Object.entries(totals)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `<span><i style="background:${categoryColor(k === "OTHER" ? "" : k)}"></i>${k === "OTHER" ? "Other" : categoryLabel(k)} <b>${fmtMoneyWhole(v)}</b></span>`)
+    .join("");
+  const stat = (label, value) => `<div><div class="kpi-label">${label}</div><div class="stat-value amount">${value}</div></div>`;
+  return `
+    <div class="stats" style="margin-top:0;padding-top:0;border-top:none;margin-bottom:14px">
+      ${stat("Average per day", fmtMoney(data.average_per_day))}
+      ${stat("Highest day", data.highest_day ? `${fmtMoneyWhole(data.highest_day.total)} <span class="muted" style="font-weight:400;font-size:12px">${fmtDate(data.highest_day.date)}</span>` : "—")}
+      ${stat("No-spend days", `${data.no_spend_days} of ${data.days.length}`)}
+      ${stat("Priciest weekday", busiest ? `${busiest.day} <span class="muted" style="font-weight:400;font-size:12px">~${fmtMoneyWhole(busiest.avg)}</span>` : "—")}
+    </div>
+    ${data.total > 0 ? svgDailyStack(data.days, { width: Math.max(280, Math.round(width)), height: width < 500 ? 180 : 230 }) : '<div class="chart-empty">No spending in this period.</div>'}
+    <div class="cat-legend">${legend}</div>`;
+}
+
+function dailySpendingSub(data) {
+  const scope = data.include_bills ? "All spending" : "Everyday spending";
+  const aside = !data.include_bills && data.bills_excluded > 0 ? ` · ${fmtMoney(data.bills_excluded)} in fixed bills set aside` : "";
+  return `${scope} · ${fmtMoney(data.total)} total${aside}`;
+}
+
+// --- Plaid update mode: grant more products on an existing connection ---------
+
+async function grantProductAccess(itemId, product, onDone) {
+  const { link_token } = await apiFetch(`/api/link/token/update/${encodeURIComponent(itemId)}?product=${product}`, { method: "POST" });
+  const handler = Plaid.create({
+    token: link_token,
+    // Update mode keeps the existing access token; there is nothing to exchange.
+    onSuccess: async () => {
+      showToast("Access granted — syncing your investment history…");
+      try {
+        await apiFetch("/api/sync/full", { method: "POST" });
+        await Promise.all([refreshSyncStatus(), onDone ? onDone() : null]);
+        showToast("Investment history synced");
+      } catch (err) {
+        showToast(err.message);
+      }
+    },
+    onExit: (err) => { if (err) showToast(err.display_message || err.error_message || "Plaid closed"); },
+  });
+  handler.open();
+}
+
+// Several lines on one time axis (e.g. money contributed vs. account value).
+// series: [{ points: [{date, value}], color, label, dashed?, step? }]
+function svgMultiTimeChart(series, { height = 220, width = CHART_W } = {}) {
+  const all = series.flatMap((s) => s.points.map((p) => ({ t: new Date(p.date + "T00:00:00").getTime(), v: p.value })));
+  if (all.length < 2) return "";
+  const padL = 56, padR = 12, padT = 14, padB = 26;
+  const t0 = Math.min(...all.map((p) => p.t)), t1 = Math.max(...all.map((p) => p.t));
+  const ticks = niceTicks(Math.min(0, ...all.map((p) => p.v)), Math.max(...all.map((p) => p.v)));
+  const minY = ticks[0], maxY = ticks[ticks.length - 1];
+  const x = (t) => padL + ((t - t0) / (t1 - t0 || 1)) * (width - padL - padR);
+  const y = (v) => padT + (1 - (v - minY) / (maxY - minY || 1)) * (height - padT - padB);
+  const spanDays = (t1 - t0) / 86400000;
+  const fmtTick = (t) => new Date(t).toLocaleDateString("en-US", spanDays > 400 ? { month: "short", year: "numeric" } : { month: "short", day: "numeric" });
+  const xLabels = [0, 0.5, 1]
+    .map((f, i) => `<text x="${x(t0 + f * (t1 - t0))}" y="${height - 6}" text-anchor="${["start", "middle", "end"][i]}" class="axis">${fmtTick(t0 + f * (t1 - t0))}</text>`)
+    .join("");
+  const lines = series
+    .map((s) => {
+      const pts = s.points.map((p) => ({ t: new Date(p.date + "T00:00:00").getTime(), v: p.value }));
+      if (!pts.length) return "";
+      if (s.extendTo && pts[pts.length - 1].t < t1) pts.push({ t: t1, v: pts[pts.length - 1].v });
+      let d = `M${x(pts[0].t)},${y(pts[0].v)}`;
+      for (let i = 1; i < pts.length; i++) {
+        d += s.step ? ` H${x(pts[i].t)} V${y(pts[i].v)}` : ` L${x(pts[i].t)},${y(pts[i].v)}`;
+      }
+      const dots = s.dots ? pts.map((p) => `<circle cx="${x(p.t)}" cy="${y(p.v)}" r="4" fill="var(--surface)" stroke="${s.color}" stroke-width="2" />`).join("") : "";
+      return `<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" ${s.dashed ? 'stroke-dasharray="5 4"' : ""} stroke-linejoin="round" />${dots}`;
+    })
+    .join("");
+  return `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img">${_yGrid(ticks, y, padL, width)}${lines}${xLabels}</svg>`;
 }

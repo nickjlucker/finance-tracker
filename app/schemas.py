@@ -139,6 +139,8 @@ class NetWorthOut(BaseModel):
     projection: list[ProjectionPointOut]
     projection_series: list[NetWorthPointOut]
     reconstructed_until: date | None = None
+    investments_missing_growth: list[str] = []
+    investments_priced: bool = False
 
 
 class LiquidityBreakdownOut(BaseModel):

@@ -1,0 +1,344 @@
+{% extends "base.html" %}
+{% block title %}Plan · Finance Tracker{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Wealth plan</h1>
+    <div class="sub" id="plan-sub">&nbsp;</div>
+  </div>
+  <div class="page-actions">
+    <button class="btn secondary" id="edit-settings" type="button">Edit targets</button>
+  </div>
+</div>
+
+<section class="card" id="settings-card" hidden style="margin-bottom:16px">
+  <div class="card-head"><div><h2 class="card-title">Targets</h2><div class="card-sub">What "on track" means. Changes apply immediately.</div></div></div>
+  <form class="settings-form" id="settings-form">
+    <div class="field"><label for="s-min">Minimum per paycheck</label><input class="input" id="s-min" type="number" min="0" step="25" /></div>
+    <div class="field"><label for="s-stretch">Stretch per paycheck</label><input class="input" id="s-stretch" type="number" min="0" step="25" /></div>
+    <div class="field"><label for="s-months">Cash buffer (months of essentials)</label><input class="input" id="s-months" type="number" min="0" step="0.5" /></div>
+    <div class="field"><label for="s-target">Or a fixed buffer amount</label><input class="input" id="s-target" type="number" min="0" step="100" placeholder="automatic" /></div>
+    <div class="field"><button class="btn" type="submit">Save</button></div>
+  </form>
+</section>
+
+<div class="grid">
+  <section class="card span-8">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">This paycheck</h2>
+        <div class="card-sub" id="period-sub">&nbsp;</div>
+      </div>
+      <span id="period-status"></span>
+    </div>
+    <div class="instruction" id="instruction"><span class="skeleton" style="height:22px"></span></div>
+    <div id="period-progress"></div>
+  </section>
+
+  <div class="span-4 col-stack">
+    <section class="card">
+      <div class="kpi-label">On-target streak</div>
+      <div class="streak" id="streak">—</div>
+      <div class="kpi-sub" id="streak-sub">&nbsp;</div>
+    </section>
+    <section class="card">
+      <div class="card-head" style="margin-bottom:8px"><div><h2 class="card-title">Cash buffer</h2><div class="card-sub" id="buffer-sub">&nbsp;</div></div></div>
+      <div id="buffer-body"></div>
+    </section>
+  </div>
+
+  <section class="card span-12">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">Every paycheck</h2>
+        <div class="card-sub">What went to investing from each paycheck, against your minimum and stretch targets</div>
+      </div>
+    </div>
+    <div id="history-chart"></div>
+    <div class="table-wrap" style="margin-top:12px"><table id="history-table"></table></div>
+  </section>
+
+  <section class="card span-12">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">The gap</h2>
+        <div class="card-sub">Monthly, from your last 13 weeks. Where the target money comes from.</div>
+      </div>
+    </div>
+    <div id="gap-body"></div>
+  </section>
+
+  <section class="card span-12">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">Spending guardrails</h2>
+        <div class="card-sub" id="rails-sub">Monthly caps from the audit. Bar = this month so far; tick = where you'll land at this pace; black line = cap.</div>
+      </div>
+    </div>
+    <div class="table-wrap"><table id="rails-table"></table></div>
+  </section>
+
+  <section class="card span-12">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">Opportunities</h2>
+        <div class="card-sub">Biggest moves first. Limits are 2026 IRS limits. General information, not tax advice.</div>
+      </div>
+    </div>
+    <div class="grid" id="opps" style="gap:12px"></div>
+  </section>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let planData = null;
+
+const STATUS = {
+  stretch: ["good", "Stretch hit"],
+  hit: ["good", "Minimum hit"],
+  missed: ["bad", "Missed"],
+  in_progress: ["warn", "In progress"],
+};
+
+function statusBadge(status) {
+  const [tone, label] = STATUS[status] || ["", status];
+  return `<span class="badge ${tone}">${label}</span>`;
+}
+
+function renderThisPaycheck(p) {
+  const s = p.settings, a = p.action, period = p.this_period;
+  const payday = p.next_payday;
+  const paydayText = payday ? (daysFromToday(payday) <= 0 ? "today" : fmtRelativeDay(payday)) : "next payday";
+  const landed = period && period.start === p.today && !period.expected;
+  const lead = payday && daysFromToday(payday) >= 0 && !landed
+    ? `When your ~${fmtMoneyWhole(p.average_paycheck)} paycheck lands ${paydayText}:`
+    : "From this paycheck:";
+  let what;
+  if (a.kind === "split") {
+    what = `move <strong>${fmtMoney(a.to_buffer)}</strong> to savings (that completes your cash buffer) and <strong>${fmtMoney(a.to_invest)}</strong> to investing.`;
+  } else if (a.kind === "build_buffer") {
+    what = `move <strong>${fmtMoney(a.to_buffer)}</strong> to savings. Your cash buffer comes first; investing starts next paycheck.`;
+  } else {
+    what = `invest <strong>${fmtMoney(a.to_invest)}</strong>${a.to_invest >= s.invest_stretch_per_paycheck ? " — your stretch target" : ""}.`;
+  }
+  document.getElementById("instruction").innerHTML = `${lead} ${what}`;
+
+  if (period) {
+    document.getElementById("period-sub").textContent =
+      `Pay period ${fmtDate(period.start)} – ${fmtDate(period.end)} · ${period.expected ? `~${fmtMoney(period.take_home)} paycheck expected` : `${fmtMoney(period.take_home)} paycheck`} · ${fmtMoney(period.spend)} spent so far`;
+    document.getElementById("period-status").innerHTML = statusBadge(period.status);
+    const max = Math.max(s.invest_stretch_per_paycheck * 1.15, period.invested_from_pay);
+    const pct = (v) => `${Math.min(100, (v / max) * 100)}%`;
+    document.getElementById("period-progress").innerHTML = `
+      <div class="target-track">
+        <div class="fill" style="width:${pct(period.invested_from_pay)}"></div>
+        <div class="mark" style="left:${pct(s.invest_min_per_paycheck)}"><span>min ${fmtMoneyWhole(s.invest_min_per_paycheck)}</span></div>
+        <div class="mark" style="left:${pct(s.invest_stretch_per_paycheck)}"><span>stretch ${fmtMoneyWhole(s.invest_stretch_per_paycheck)}</span></div>
+      </div>
+      <div class="split row-sub"><span>${fmtMoney(period.invested_from_pay)} moved to investing this period</span>
+      <span>+ ${fmtMoney(period.investing.retirement_payroll)} 401(k) from payroll · ${fmtMoney(period.investing.employer)} employer HSA</span></div>`;
+  }
+}
+
+function renderStreakAndBuffer(p) {
+  const done = p.periods.filter((x) => x.complete);
+  const hits = done.filter((x) => x.status === "hit" || x.status === "stretch").length;
+  document.getElementById("streak").textContent = `${p.streak} paycheck${p.streak === 1 ? "" : "s"}`;
+  document.getElementById("streak-sub").textContent = `Hit the minimum on ${hits} of the last ${done.length} paychecks`;
+
+  const b = p.buffer;
+  const pct = b.target ? Math.min(100, (b.cash / b.target) * 100) : 100;
+  document.getElementById("buffer-sub").textContent = `${b.months} month${b.months === 1 ? "" : "s"} of essentials (${fmtMoneyWhole(b.essentials.bills)} bills + ${fmtMoneyWhole(b.essentials.groceries)} groceries)`;
+  document.getElementById("buffer-body").innerHTML = `
+    <div class="split" style="align-items:baseline"><span class="kpi-value" style="font-size:22px;margin:0">${fmtMoneyWhole(b.cash)}</span><span class="muted">of ${fmtMoneyWhole(b.target)}</span></div>
+    <div class="bar-track" style="margin:10px 0 8px"><div class="bar-fill ${b.gap > 0 ? "warn" : "good"}" style="width:${pct}%"></div></div>
+    <div class="row-sub">${b.gap > 0 ? `${fmtMoney(b.gap)} to go` : "Buffer complete — every target dollar goes to investing"} · lowest point next 30 days ${fmtMoneyWhole(p.forecast_low.amount)} on ${fmtDate(p.forecast_low.date)}</div>`;
+}
+
+function renderHistory(p) {
+  const s = p.settings;
+  const periods = p.periods;
+  const el = document.getElementById("history-chart");
+  const width = Math.max(300, Math.round(el.clientWidth || 640));
+  const height = 200, padL = 52, padR = 8, padT = 14, padB = 26;
+  const series = [
+    ["from_checking", "var(--cat-1)", "From your paycheck"],
+    ["retirement_payroll", "var(--cat-2)", "401(k) via payroll"],
+    ["employer", "var(--cat-3)", "Employer HSA"],
+  ];
+  const totals = periods.map((x) => series.reduce((sum, [k]) => sum + x.investing[k], 0));
+  const ticks = niceTicks(0, Math.max(s.invest_stretch_per_paycheck * 1.1, ...totals));
+  const maxY = ticks[ticks.length - 1];
+  const y = (v) => padT + (1 - v / maxY) * (height - padT - padB);
+  const slot = (width - padL - padR) / periods.length;
+  const barW = Math.min(44, slot * 0.6);
+  let bars = "";
+  periods.forEach((x, i) => {
+    const bx = padL + slot * i + (slot - barW) / 2;
+    let acc = 0;
+    const segs = series.filter(([k]) => x.investing[k] > 0);
+    segs.forEach(([k, color], si) => {
+      const v = x.investing[k];
+      const y0 = y(acc), y1 = y(acc + v);
+      acc += v;
+      const top = si === segs.length - 1;
+      const h = Math.max(1, y0 - y1 - (top ? 0 : 2));
+      bars += `<rect x="${bx}" y="${y0 - h}" width="${barW}" height="${h}" rx="${top ? 3 : 0}" fill="${color}"><title>${fmtDate(x.start)}: ${fmtMoney(v)}</title></rect>`;
+    });
+    // Narrow screens: label every other bar (always the latest) so dates don't collide.
+    const every = slot < 56 ? 2 : 1;
+    if ((periods.length - 1 - i) % every === 0) {
+      bars += `<text x="${bx + barW / 2}" y="${height - 6}" text-anchor="middle" class="axis">${fmtDate(x.start)}${x.complete ? "" : "*"}</text>`;
+    }
+  });
+  const line = (v, label) => `<line x1="${padL}" x2="${width - padR}" y1="${y(v)}" y2="${y(v)}" stroke="var(--text-3)" stroke-dasharray="4 4" />
+    <text x="${padL + 4}" y="${y(v) - 5}" class="axis avg-label">${label} ${fmtMoneyWhole(v)}</text>`;
+  el.innerHTML = `<svg class="chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Investing per paycheck">
+      ${_yGrid(ticks, y, padL, width)}${line(s.invest_min_per_paycheck, "min")}${line(s.invest_stretch_per_paycheck, "stretch")}${bars}
+    </svg>
+    <div class="chart-legend">${series.map(([, c, l]) => `<span><i style="background:${c}"></i>${l}</span>`).join("")}<span>Targets count money you move from your paycheck; payroll 401(k) and employer money are extra</span><span>* current period</span></div>`;
+
+  document.getElementById("history-table").innerHTML = `
+    <thead><tr><th>Payday</th><th class="amount">Paycheck</th><th class="amount">Spent</th><th class="amount">Left over</th><th class="amount">Moved to investing</th><th class="amount">401(k)</th><th class="amount">Employer</th><th>Status</th></tr></thead>
+    <tbody>${periods.slice().reverse().map((x) => `<tr>
+      <td>${fmtDate(x.start, { weekday: "short", month: "short", day: "numeric" })}</td>
+      <td class="amount">${x.expected ? `<span class="muted">~${fmtMoney(x.take_home)} expected</span>` : fmtMoney(x.take_home)}</td>
+      <td class="amount">${fmtMoney(x.spend)}</td>
+      <td class="amount">${x.left_over < 0 ? `<span class="delta-bad">−${fmtMoney(-x.left_over)}</span>` : fmtMoney(x.left_over)}</td>
+      <td class="amount">${fmtMoney(x.investing.from_checking)}</td>
+      <td class="amount muted">${x.investing.retirement_payroll ? fmtMoney(x.investing.retirement_payroll) : "—"}</td>
+      <td class="amount muted">${x.investing.employer ? fmtMoney(x.investing.employer) : "—"}</td>
+      <td>${statusBadge(x.status)}</td></tr>`).join("")}</tbody>`;
+}
+
+function renderGap(p) {
+  const g = p.gap;
+  const rows = [
+    ["Left over today", g.surplus_now, g.surplus_now < 0 ? "var(--bad)" : "var(--series-1)"],
+    ["If you hold the guardrails", g.surplus_with_levers, "var(--good)"],
+    ["Minimum target", g.min_monthly, "var(--text-3)"],
+    ["Stretch target", g.stretch_monthly, "var(--text-3)"],
+  ];
+  const lo = Math.min(0, ...rows.map((r) => r[1])), hi = Math.max(...rows.map((r) => r[1]));
+  const span = hi - lo || 1;
+  const pos = (v) => ((v - lo) / span) * 100;
+  const short = g.stretch_monthly - g.surplus_with_levers;
+  document.getElementById("gap-body").innerHTML = `
+    <div class="stats" style="margin-top:0;padding-top:0;border-top:none;margin-bottom:14px">
+      <div><div class="kpi-label">Take-home</div><div class="stat-value amount">${fmtMoney(g.monthly_take_home)}/mo</div></div>
+      <div><div class="kpi-label">Spending</div><div class="stat-value amount">${fmtMoney(g.monthly_spend)}/mo</div></div>
+      <div><div class="kpi-label">Guardrails free up</div><div class="stat-value amount delta-good">+${fmtMoney(g.lever_savings)}/mo</div></div>
+      <div><div class="kpi-label">Minimum needs</div><div class="stat-value amount">${fmtMoney(g.min_monthly)}/mo</div></div>
+    </div>
+    <div class="gap-bars">${rows.map(([label, v, color]) => `
+      <div class="gap-row"><span>${label}</span>
+        <div class="gap-track"><div class="gap-zero" style="left:${pos(0)}%"></div>
+          <div class="gap-fill" style="left:${Math.min(pos(0), pos(v))}%;width:${Math.abs(pos(v) - pos(0))}%;background:${color}"></div></div>
+        <span class="amount">${v < 0 ? "−" : ""}${fmtMoneyWhole(Math.abs(v))}</span></div>`).join("")}
+    </div>
+    <div class="callout ${g.surplus_with_levers >= g.min_monthly ? "good" : "warn"}" style="margin-top:14px"><span class="dot"></span><span>
+      ${g.surplus_with_levers >= g.min_monthly
+        ? `Holding the guardrails covers the <strong>$${Math.round(p.settings.invest_min_per_paycheck)}/paycheck minimum</strong> with ${fmtMoneyWhole(g.surplus_with_levers - g.min_monthly)}/mo to spare.`
+        : `Even with the guardrails you're ${fmtMoneyWhole(g.min_monthly - g.surplus_with_levers)}/mo short of the minimum.`}
+      ${short > 0 ? ` The <strong>$${Math.round(p.settings.invest_stretch_per_paycheck)} stretch</strong> needs another ${fmtMoneyWhole(short)}/mo: that has to come from rent or income (see Opportunities).` : " That also covers the stretch target."}
+    </span></div>`;
+}
+
+function renderRails(p) {
+  const rails = p.guardrails;
+  const today = new Date();
+  const monthName = today.toLocaleDateString("en-US", { month: "long" });
+  document.getElementById("rails-table").innerHTML = `
+    <thead><tr><th>Lever</th><th class="amount">13-week avg</th><th class="amount">Monthly cap</th><th>${monthName} so far</th><th class="amount">Frees up</th></tr></thead>
+    <tbody>${rails.map((r) => {
+      const max = Math.max(r.cap * 1.4, r.month_pace, r.month_to_date, 1);
+      const w = (v) => `${Math.min(100, (v / max) * 100)}%`;
+      const tone = r.status === "over" ? "bad" : r.status === "at_risk" ? "warn" : "good";
+      const label = r.status === "over" ? "Over cap" : r.status === "at_risk" ? "On pace to go over" : "On track";
+      return `<tr>
+        <td><div class="cell-title">${escapeHtml(r.label)}</div><div class="cell-sub" style="white-space:normal;max-width:340px">${escapeHtml(r.tip)}${r.top_merchants.length ? ` Biggest: ${r.top_merchants.map((m) => `${escapeHtml(m.name)} ${fmtMoneyWhole(m.monthly)}/mo`).join(", ")}.` : ""}</div></td>
+        <td class="amount">${fmtMoneyWhole(r.baseline_monthly)}</td>
+        <td class="amount"><input class="input cap-input" type="number" min="0" step="10" value="${Math.round(r.cap)}" data-key="${r.key}" aria-label="Monthly cap for ${escapeHtml(r.label)}" /></td>
+        <td style="min-width:220px">
+          <div class="rail-bar"><div class="fill ${r.status}" style="width:${w(r.month_to_date)}"></div><div class="pace" style="left:${w(r.month_pace)}"></div><div class="cap" style="left:${w(r.cap)}"></div></div>
+          <div class="cell-sub" style="margin-top:6px">${fmtMoneyWhole(r.month_to_date)} spent · pace ${fmtMoneyWhole(r.month_pace)} · <span class="delta-${tone === "good" ? "good" : "bad"}">${label}</span></div>
+        </td>
+        <td class="amount delta-good">${r.monthly_savings_if_held ? `+${fmtMoneyWhole(r.monthly_savings_if_held)}/mo` : "—"}</td></tr>`;
+    }).join("")}</tbody>`;
+  document.querySelectorAll(".cap-input").forEach((input) =>
+    input.addEventListener("change", async () => {
+      try {
+        await apiFetch("/api/plan/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ guardrail_caps: { [input.dataset.key]: Number(input.value) } }) });
+        showToast("Cap saved");
+        await loadPlan();
+      } catch (err) {
+        showToast(err.message);
+      }
+    })
+  );
+}
+
+function renderOpportunities(p) {
+  document.getElementById("opps").innerHTML = p.opportunities
+    .map((o) => `<div class="opp span-4">
+        <div class="row-title">${escapeHtml(o.title)}</div>
+        <div class="opp-amount">${fmtMoneyWhole(o.amount)}${o.key === "housing" ? "/mo" : o.key === "401k_room" || o.key === "hsa_payroll" ? " of room left" : o.key === "ira" ? "/yr" : ""}</div>
+        <div class="opp-detail">${escapeHtml(o.detail)}</div>
+        ${o.items ? `<ul class="opp-items">${o.items.map((i) => `<li>${fmtDate(i.date)} · ${escapeHtml(i.name)} · ${fmtMoney(i.amount)}</li>`).join("")}</ul>` : ""}
+      </div>`)
+    .join("");
+}
+
+function fillSettings(s) {
+  document.getElementById("s-min").value = s.invest_min_per_paycheck;
+  document.getElementById("s-stretch").value = s.invest_stretch_per_paycheck;
+  document.getElementById("s-months").value = s.emergency_months;
+  document.getElementById("s-target").value = s.emergency_target ?? "";
+}
+
+async function loadPlan() {
+  const p = await apiFetch("/api/plan");
+  planData = p;
+  const s = p.settings;
+  document.getElementById("plan-sub").textContent =
+    `Invest ${fmtMoneyWhole(s.invest_min_per_paycheck)} per paycheck (stretch ${fmtMoneyWhole(s.invest_stretch_per_paycheck)}) · ${s.emergency_months}-month cash buffer first`;
+  renderThisPaycheck(p);
+  renderStreakAndBuffer(p);
+  renderHistory(p);
+  renderGap(p);
+  renderRails(p);
+  renderOpportunities(p);
+  fillSettings(s);
+}
+
+document.getElementById("edit-settings").addEventListener("click", () => {
+  const card = document.getElementById("settings-card");
+  card.hidden = !card.hidden;
+});
+document.getElementById("settings-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const target = document.getElementById("s-target").value;
+  try {
+    await apiFetch("/api/plan/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        invest_min_per_paycheck: Number(document.getElementById("s-min").value),
+        invest_stretch_per_paycheck: Number(document.getElementById("s-stretch").value),
+        emergency_months: Number(document.getElementById("s-months").value),
+        emergency_target: target === "" ? null : Number(target),
+      }),
+    });
+    showToast("Targets saved");
+    document.getElementById("settings-card").hidden = true;
+    await loadPlan();
+  } catch (err) {
+    showToast(err.message);
+  }
+});
+
+onDataChanged = loadPlan;
+loadPlan().catch((err) => showToast(err.message));
+</script>
+{% endblock %}

@@ -7,6 +7,8 @@ from plaid.model.item_remove_request import ItemRemoveRequest
 from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.institutions_get_by_id_request import InstitutionsGetByIdRequest
 from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
+from plaid.model.investments_transactions_get_request import InvestmentsTransactionsGetRequest
+from plaid.model.investments_transactions_get_request_options import InvestmentsTransactionsGetRequestOptions
 from plaid.model.liabilities_get_request import LiabilitiesGetRequest
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
@@ -58,6 +60,30 @@ def create_link_token(user_id: str) -> str:
     return response.link_token
 
 
+def create_update_link_token(user_id: str, access_token: str, additional_products: list[str]) -> str:
+    """Link in update mode: re-open an existing connection to grant more products
+    (e.g. investments for a brokerage linked with transactions only) without re-linking."""
+    request = LinkTokenCreateRequest(
+        client_name="Personal Finance Tracker",
+        country_codes=[CountryCode(c) for c in settings.plaid_country_codes_list],
+        language="en",
+        user=LinkTokenCreateRequestUser(client_user_id=user_id),
+        access_token=access_token,
+        additional_consented_products=[Products(p) for p in additional_products],
+    )
+    return client.link_token_create(request).link_token
+
+
+def plaid_error_code(exc: Exception) -> str | None:
+    """The error_code from a Plaid ApiException body, if there is one."""
+    import json
+
+    try:
+        return json.loads(getattr(exc, "body", "") or "{}").get("error_code")
+    except (TypeError, ValueError):
+        return None
+
+
 def exchange_public_token(public_token: str) -> tuple[str, str]:
     request = ItemPublicTokenExchangeRequest(public_token=public_token)
     response = client.item_public_token_exchange(request)
@@ -95,6 +121,28 @@ def get_liabilities(access_token: str) -> list:
 def get_holdings(access_token: str) -> tuple[list, list]:
     response = client.investments_holdings_get(InvestmentsHoldingsGetRequest(access_token=access_token))
     return response.securities or [], response.holdings or []
+
+
+def get_investment_transactions(access_token: str, start_date, end_date) -> tuple[list, list]:
+    """All investment transactions in the window (Plaid serves up to 24 months), paginated."""
+    securities, transactions = {}, []
+    offset = 0
+    while True:
+        response = client.investments_transactions_get(
+            InvestmentsTransactionsGetRequest(
+                access_token=access_token,
+                start_date=start_date,
+                end_date=end_date,
+                options=InvestmentsTransactionsGetRequestOptions(count=500, offset=offset),
+            )
+        )
+        for sec in response.securities or []:
+            securities[sec.security_id] = sec
+        transactions.extend(response.investment_transactions or [])
+        offset = len(transactions)
+        if offset >= response.total_investment_transactions or not response.investment_transactions:
+            break
+    return list(securities.values()), transactions
 
 
 def sync_transactions(access_token: str, cursor: str | None) -> dict:

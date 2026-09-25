@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from app import analytics
 from app.database import get_db
-from app.models import Account, Holding, Security
+from app.models import Account, Holding, PlaidItem, Security
 from app.schemas import (
     AlertsOut,
     CashFlowForecastOut,
@@ -88,6 +88,11 @@ def networth(annual_return_pct: float = Query(5.0), db: Session = Depends(get_db
         "projection": projection,
         "projection_series": projection_series,
         "reconstructed_until": estimated[-1] if estimated else None,
+        "investments_priced": bool(analytics.priceable_holdings(db)),
+        "investments_missing_growth": [
+            item.institution_name
+            for item in db.query(PlaidItem).filter(PlaidItem.investments_status == "consent_required").all()
+        ],
     }
 
 
@@ -99,6 +104,11 @@ def forecast(days: int = Query(30), safety_floor: float = Query(500.0), db: Sess
 @router.get("/monthly-summary", response_model=list[MonthlySummaryOut])
 def monthly_summary(months: int = Query(6), db: Session = Depends(get_db)):
     return analytics.monthly_income_spend_savings(db, months=months)
+
+
+@router.get("/investments")
+def investments(db: Session = Depends(get_db)):
+    return analytics.investment_performance(db)
 
 
 @router.get("/holdings", response_model=list[HoldingOut])

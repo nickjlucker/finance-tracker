@@ -518,3 +518,196 @@ def test_reconstructed_net_worth_walks_back_from_first_snapshot(db_session):
     assert history[today - timedelta(days=2)]["net_worth"] == 850.0  # after the deposit, before the purchase
     assert history[today - timedelta(days=2)]["estimated"]
     assert min(history) == today - timedelta(days=2)  # nothing before the first transaction
+
+
+def test_daily_spending_splits_by_category_and_sets_bills_aside(db_session):
+    item = make_item(db_session)
+    checking = make_account(db_session, item, "acct-checking")
+    today = date.today()
+    for i in range(4):  # a monthly rent bill
+        make_txn(
+            db_session, checking, f"rent-{i}", 2100.0, today - timedelta(days=5 + i * 30),
+            name="Bilt Rent", category_primary="RENT_AND_UTILITIES", category_detailed="RENT_AND_UTILITIES_RENT",
+        )
+    make_txn(db_session, checking, "coffee", 6.0, today - timedelta(days=1), name="Starbucks", category_primary="FOOD_AND_DRINK")
+    make_txn(db_session, checking, "lunch", 14.0, today - timedelta(days=1), name="Cava", category_primary="FOOD_AND_DRINK")
+    make_txn(db_session, checking, "uber", 20.0, today - timedelta(days=1), name="Uber", category_primary="TRANSPORTATION")
+    make_txn(db_session, checking, "refund", -30.0, today - timedelta(days=1), name="Refund", category_primary="FOOD_AND_DRINK")
+
+    everyday = analytics.daily_spending(db_session, start=today - timedelta(days=9), end=today)
+    by_date = {d["date"]: d for d in everyday["days"]}
+    assert len(everyday["days"]) == 10  # every day present, including no-spend days
+    assert by_date[today - timedelta(days=1)]["categories"] == {"FOOD_AND_DRINK": 20.0, "TRANSPORTATION": 20.0}
+    assert by_date[today - timedelta(days=5)]["total"] == 0  # rent set aside by default
+    assert everyday["bills_excluded"] == 2100.0
+    assert everyday["no_spend_days"] == 9
+
+    with_bills = analytics.daily_spending(db_session, start=today - timedelta(days=9), end=today, include_bills=True)
+    assert {d["date"]: d for d in with_bills["days"]}[today - timedelta(days=5)]["total"] == 2100.0
+
+
+def test_xirr_matches_simple_compounding():
+    start = date(2025, 1, 1)  # a 365-day year
+    rate = analytics.xirr([(start, -1000.0), (date(2026, 1, 1), 1100.0)])
+    assert abs(rate - 0.10) < 1e-4
+    assert analytics.xirr([(start, -1000.0)]) is None  # nothing to compare against
+
+
+def test_investment_performance_with_full_brokerage_history(db_session):
+    from app.models import InvestmentTransaction
+
+    item = make_item(db_session, institution_name="Webull")
+    item.investments_status = "ok"
+    brokerage = make_account(db_session, item, "acct-brokerage", name="Individual", acct_type="investment", subtype="brokerage", balance=12100.0)
+    voo = Security(security_id="sec-voo", ticker_symbol="VOO", name="Vanguard S&P 500", type="etf")
+    db_session.add(voo)
+    db_session.flush()
+    db_session.add(Holding(account_id=brokerage.id, security_id=voo.id, quantity=20.0, institution_price=600.0, institution_value=12000.0, cost_basis=10000.0))
+    start = date.today() - timedelta(days=365)
+    db_session.add_all([
+        InvestmentTransaction(investment_transaction_id="d1", account_id=brokerage.id, date=start, type="cash", subtype="deposit", amount=-10000.0),
+        InvestmentTransaction(investment_transaction_id="b1", account_id=brokerage.id, security_id=voo.id, date=start, type="buy", subtype="buy", amount=10000.0, quantity=20.0, price=500.0),
+        InvestmentTransaction(investment_transaction_id="v1", account_id=brokerage.id, security_id=voo.id, date=start + timedelta(days=180), type="cash", subtype="dividend", amount=-100.0),
+    ])
+    db_session.flush()
+
+    perf = analytics.investment_performance(db_session)
+
+    assert perf["access"] == "ok"
+    assert perf["net_contributed"] == 10000.0
+    assert perf["full_history"] is True
+    assert perf["total_gain"] == 2100.0  # value 12,100 - contributed 10,000
+    assert perf["unrealized_gain"] == 2000.0
+    assert perf["dividends"] == 100.0
+    assert abs(perf["annualized_return"] - 0.21) < 0.005
+    assert perf["holdings"][0]["ticker"] == "VOO" and perf["holdings"][0]["gain_pct"] == 0.2
+
+
+def test_investment_performance_without_consent_falls_back_to_bank_transfers(db_session):
+    item = make_item(db_session, institution_name="Webull")
+    item.investments_status = "consent_required"
+    make_account(db_session, item, "acct-brokerage", acct_type="investment", subtype="brokerage", balance=41000.0)
+    bank_item = make_item(db_session, institution_name="Bank")
+    checking = make_account(db_session, bank_item, "acct-checking")
+    make_txn(db_session, checking, "to-webull", 1000.0, date.today() - timedelta(days=30), category_primary="TRANSFER_OUT", category_detailed="TRANSFER_OUT_INVESTMENT_AND_RETIREMENT_FUNDS")
+
+    perf = analytics.investment_performance(db_session)
+
+    assert perf["access"] == "consent_required"
+    assert perf["items_needing_consent"][0]["institution_name"] == "Webull"
+    assert perf["contributions_source"] == "bank_transfers" and perf["net_contributed"] == 1000.0
+    assert perf["total_gain"] is None  # can't claim a gain without the full history
+
+
+def test_price_series_forward_fills_weekends(db_session):
+    from app import market_data
+    from app.models import SecurityPrice
+
+    fri, mon = date(2026, 9, 18), date(2026, 9, 21)
+    db_session.add_all([SecurityPrice(ticker="NVDA", date=fri, close=100.0), SecurityPrice(ticker="NVDA", date=mon, close=110.0)])
+    db_session.flush()
+
+    series = market_data.price_series(db_session, "NVDA", fri, mon)
+
+    assert series == {fri: 100.0, fri + timedelta(days=1): 100.0, fri + timedelta(days=2): 100.0, mon: 110.0}
+
+
+def test_portfolio_value_history_prices_shares_and_rolls_back_trades(db_session):
+    from app.models import InvestmentTransaction, SecurityPrice
+
+    item = make_item(db_session, institution_name="Webull")
+    brokerage = make_account(db_session, item, "acct-brokerage", acct_type="investment", subtype="brokerage", balance=1100.0)
+    nvda = Security(security_id="sec-nvda", ticker_symbol="NVDA", name="NVIDIA", type="equity")
+    option = Security(security_id="sec-opt", ticker_symbol="HIMS261016C00040000", name="HIMS call", type="derivative")
+    db_session.add_all([nvda, option])
+    db_session.flush()
+    db_session.add_all([
+        Holding(account_id=brokerage.id, security_id=nvda.id, quantity=10.0, institution_value=1080.0),
+        Holding(account_id=brokerage.id, security_id=option.id, quantity=1.0, institution_value=20.0),
+    ])
+    today = date.today()
+    d0, d1 = today - timedelta(days=2), today - timedelta(days=1)
+    db_session.add_all([
+        SecurityPrice(ticker="NVDA", date=d0, close=100.0),
+        SecurityPrice(ticker="NVDA", date=d1, close=105.0),
+        SecurityPrice(ticker="NVDA", date=today, close=108.0),
+        # Bought 4 of the 10 shares yesterday with cash already in the account.
+        InvestmentTransaction(investment_transaction_id="buy", account_id=brokerage.id, security_id=nvda.id, date=d1, type="buy", subtype="buy", amount=420.0, quantity=4.0, price=105.0),
+    ])
+    db_session.flush()
+
+    result = analytics.portfolio_value_history(db_session, [brokerage.id], d0, today)
+    series = result["series"]
+
+    assert series[today] == 10 * 108.0 + 20.0  # cash 0 + shares + option held at today's value
+    assert series[d1] == 10 * 105.0 + 20.0
+    # Before the buy: 6 shares plus the $420 that was still cash.
+    assert series[d0] == 6 * 100.0 + 420.0 + 20.0
+    assert result["unpriced"] == ["HIMS261016C00040000"]
+
+
+def _paycheck_history(db_session, checking, count=6, amount=2500.0):
+    today = date.today()
+    for i in range(count):
+        make_txn(
+            db_session, checking, f"pay-{i}", -amount, today - timedelta(days=2 + i * 14),
+            name="Employer Payroll", category_primary="INCOME", category_detailed="INCOME_WAGES",
+        )
+
+
+def test_plan_scores_each_pay_period_against_targets(db_session):
+    from app import plan
+
+    item = make_item(db_session)
+    checking = make_account(db_session, item, "acct-checking", balance=5000.0)
+    _paycheck_history(db_session, checking)
+    today = date.today()
+    # $600 to investing in the latest *complete* period, $200 in the one before.
+    make_txn(db_session, checking, "inv-a", 600.0, today - timedelta(days=15), category_primary="TRANSFER_OUT", category_detailed="TRANSFER_OUT_INVESTMENT_AND_RETIREMENT_FUNDS")
+    make_txn(db_session, checking, "inv-b", 200.0, today - timedelta(days=29), category_primary="TRANSFER_OUT", category_detailed="TRANSFER_OUT_INVESTMENT_AND_RETIREMENT_FUNDS")
+    analytics.reconcile_internal_transfers(db_session)
+
+    periods = plan.pay_period_history(db_session, plan.get_settings(db_session))
+    by_start = {p["start"]: p for p in periods}
+
+    assert by_start[today - timedelta(days=16)]["status"] == "hit"  # $600 >= $500 minimum
+    assert by_start[today - timedelta(days=30)]["status"] == "missed"
+    assert by_start[today - timedelta(days=2)]["complete"] is False
+    assert plan._streak(periods) == 1
+
+
+def test_plan_splits_target_between_buffer_and_investing(db_session):
+    from app import plan
+
+    item = make_item(db_session)
+    checking = make_account(db_session, item, "acct-checking", balance=1000.0)
+    _paycheck_history(db_session, checking)
+    plan.update_settings(db_session, {"emergency_target": 1200.0})
+
+    result = plan.build_plan(db_session)
+
+    assert result["buffer"]["gap"] == 200.0
+    assert result["action"] == {"kind": "split", "amount": 500.0, "to_buffer": 200.0, "to_invest": 300.0}
+
+
+def test_plan_counts_payroll_401k_and_separates_employer_hsa(db_session):
+    from app import plan
+    from app.models import InvestmentTransaction
+
+    item = make_item(db_session, institution_name="Fidelity")
+    k401 = make_account(db_session, item, "acct-401k", acct_type="investment", subtype="401k", balance=6000.0)
+    hsa = make_account(db_session, item, "acct-hsa", acct_type="investment", subtype="hsa", balance=5000.0)
+    fund = Security(security_id="sec-fund", ticker_symbol="JLGMX", name="JPM Large Cap Growth", type="mutual fund")
+    db_session.add(fund)
+    db_session.flush()
+    day = date.today() - timedelta(days=3)
+    db_session.add_all([
+        InvestmentTransaction(investment_transaction_id="c1", account_id=k401.id, security_id=fund.id, date=day, type="cash", subtype="contribution", amount=-247.17, quantity=2.8, name="JPM LG CAP GROWTH R6 - contribution"),
+        InvestmentTransaction(investment_transaction_id="e1", account_id=hsa.id, date=day, type="cash", subtype="deposit", amount=-100.0, name="CO CONTR CURRENT YR EMPLOYER CUR YR (Cash)"),
+        InvestmentTransaction(investment_transaction_id="p1", account_id=hsa.id, date=day, type="cash", subtype="deposit", amount=-25.0, name="PARTIC CONTR CURRENT PARTICIPANT CUR YR (Cash)"),
+    ])
+    db_session.flush()
+
+    out = plan._period_investing(db_session, day - timedelta(days=1), day, plan._investment_accounts(db_session))
+
+    assert out == {"from_checking": 0, "retirement_payroll": 247.17, "hsa_you": 25.0, "employer": 100.0}
