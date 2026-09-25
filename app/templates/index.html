@@ -1,322 +1,632 @@
 {% extends "base.html" %}
 {% block title %}Dashboard · Finance Tracker{% endblock %}
 {% block content %}
-<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
-  <h1>Dashboard</h1>
-  <div style="display:flex; gap:8px;">
-    <button class="btn secondary" id="sync-btn">Sync</button>
-    <button class="btn" id="connect-btn">Connect account</button>
+<div class="page-head">
+  <div>
+    <h1>Dashboard</h1>
+    <div class="sub" id="today-label"></div>
   </div>
 </div>
 
-<div class="stat-grid">
-  <div class="card stat-tile">
-    <div class="label">Cash</div>
-    <div class="value" id="stat-cash">—</div>
-  </div>
-  <div class="card stat-tile">
-    <div class="label">Debt</div>
-    <div class="value" id="stat-debt">—</div>
-  </div>
-  <div class="card stat-tile">
-    <div class="label">Net position</div>
-    <div class="value" id="stat-net">—</div>
-  </div>
-  <div class="card stat-tile">
-    <div class="label">Spent this month</div>
-    <div class="value" id="stat-spent">—</div>
-  </div>
-  <div class="card stat-tile">
-    <div class="label">Income this month</div>
-    <div class="value" id="stat-income">—</div>
-  </div>
-  <div class="card stat-tile">
-    <div class="label">Invested this month</div>
-    <div class="value" id="stat-invested">—</div>
-  </div>
-</div>
+<div class="grid">
+  <!-- KPIs -->
+  <section class="card span-3 kpi-hero">
+    <div class="kpi-label">Net worth</div>
+    <div class="kpi-value" id="kpi-networth"><span class="skeleton" style="width:60%;height:28px"></span></div>
+    <div class="kpi-sub" id="kpi-networth-sub">&nbsp;</div>
+  </section>
+  <section class="card span-3">
+    <div class="kpi-label">Cash on hand</div>
+    <div class="kpi-value" id="kpi-cash"><span class="skeleton" style="width:50%;height:24px"></span></div>
+    <div class="kpi-sub" id="kpi-cash-sub">&nbsp;</div>
+  </section>
+  <section class="card span-3">
+    <div class="kpi-label">Credit card balance</div>
+    <div class="kpi-value" id="kpi-debt"><span class="skeleton" style="width:50%;height:24px"></span></div>
+    <div class="kpi-sub" id="kpi-debt-sub">&nbsp;</div>
+  </section>
+  <section class="card span-3">
+    <div class="kpi-label">Spent this month</div>
+    <div class="kpi-value" id="kpi-spent"><span class="skeleton" style="width:50%;height:24px"></span></div>
+    <div class="kpi-sub" id="kpi-spent-sub">&nbsp;</div>
+  </section>
 
-<h2>Critical alerts</h2>
-<div class="card">
-  <div id="alert-list">
-    <div class="empty-state">Loading…</div>
-  </div>
-</div>
-
-<h2>Net worth</h2>
-<div class="card">
-  <div class="net-worth-top">
-    <div>
-      <div class="label">Current net position</div>
-      <div class="value" id="net-worth-current">—</div>
-      <div class="sub" id="net-worth-since">—</div>
+  <!-- Forecast + 14-day check -->
+  <section class="card span-8">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">Cash forecast · next 30 days</h2>
+        <div class="card-sub">Your checking balance, day by day</div>
+      </div>
+      <label class="input-group">Safety floor $<input class="input" type="number" id="safety-floor" value="500" min="0" step="50" /></label>
     </div>
-    <div class="return-input">
-      <label for="return-rate">Assumed annual return</label>
-      <input type="number" id="return-rate" value="5" min="-20" max="20" step="0.5" />
-      <span>%</span>
+    <div id="forecast-chart"><span class="skeleton" style="height:180px"></span></div>
+    <div class="stats" id="forecast-stats"></div>
+    <details class="disclosure" id="forecast-events"><summary>What's in this forecast</summary><div class="list" id="forecast-event-list"></div></details>
+  </section>
+
+  <section class="card span-4">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">Next 14 days</h2>
+        <div class="card-sub">Will cash cover what's due?</div>
+      </div>
     </div>
+    <div id="liquidity"><span class="skeleton"></span></div>
+    <div id="alert-list"></div>
+  </section>
+
+  <!-- Income vs spend + upcoming -->
+  <section class="card span-8">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">Income vs. spending</h2>
+        <div class="card-sub">By month, excluding transfers between your own accounts</div>
+      </div>
+    </div>
+    <div id="monthly-chart"><span class="skeleton" style="height:200px"></span></div>
+  </section>
+
+  <section class="card span-4">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">Coming up</h2>
+        <div class="card-sub">Bills, card payments and paychecks in the next 30 days</div>
+      </div>
+    </div>
+    <ul class="list" id="upcoming-list"><li><span class="skeleton"></span></li></ul>
+  </section>
+
+  <!-- Left: recurring + net worth · Right: categories + flags -->
+  <div class="span-7 col-stack">
+  <section class="card">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">Recurring</h2>
+        <div class="card-sub">Detected from the last 6 months. Change a label if it's wrong.</div>
+      </div>
+    </div>
+    <div id="recurring-list"><span class="skeleton"></span></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">Net worth over time</h2>
+        <div class="card-sub" id="networth-sub">&nbsp;</div>
+      </div>
+      <label class="input-group">Annual return <input class="input" type="number" id="return-rate" value="5" min="-20" max="20" step="0.5" style="width:64px" />%</label>
+    </div>
+    <div class="nw-headline">
+      <div class="kpi-value" id="nw-current">&nbsp;</div>
+      <div class="kpi-sub" id="nw-change">&nbsp;</div>
+    </div>
+    <div class="chart-controls">
+      <div class="segmented" id="nw-range" role="group" aria-label="History range">
+        <button type="button" data-days="30">1M</button>
+        <button type="button" data-days="90">3M</button>
+        <button type="button" data-days="182">6M</button>
+        <button type="button" data-days="365">1Y</button>
+        <button type="button" data-days="0" aria-pressed="true">All</button>
+      </div>
+      <div class="segmented" id="nw-projection" role="group" aria-label="Projection">
+        <button type="button" data-years="0" aria-pressed="true">No projection</button>
+        <button type="button" data-years="1">+1Y</button>
+        <button type="button" data-years="5">+5Y</button>
+        <button type="button" data-years="10">+10Y</button>
+      </div>
+    </div>
+    <div id="networth-chart"></div>
+    <div class="chart-legend" id="nw-legend"></div>
+    <div class="stats" id="projection-stats"></div>
+  </section>
   </div>
-  <div class="empty-state" id="net-worth-note" style="display:none;"></div>
-  <table id="projection-table">
-    <thead>
-      <tr><th>Horizon</th><th>Projected net position</th></tr>
-    </thead>
-    <tbody id="projection-body"></tbody>
-  </table>
-</div>
 
-<h2>Interest paid (trailing 12 months)</h2>
-<div class="card">
-  <div class="stat-tile">
-    <div class="value" id="stat-interest">—</div>
-    <div class="sub" id="interest-note"></div>
+  <div class="span-5 col-stack">
+  <section class="card">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">Spending by category</h2>
+        <div class="card-sub" id="category-sub">This month</div>
+      </div>
+      <a class="btn ghost" href="/budgets">Budgets →</a>
+    </div>
+    <div id="category-bars"><span class="skeleton"></span></div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">Worth a look</h2>
+        <div class="card-sub">Fees, duplicates and unusual charges from the last 6 months</div>
+      </div>
+    </div>
+    <ul class="list" id="flags-list"><li><span class="skeleton"></span></li></ul>
+  </section>
   </div>
-</div>
 
-<h2>Recurring bills</h2>
-<div class="card">
-  <ul class="account-list" id="recurring-list">
-    <li class="empty-state">Loading…</li>
-  </ul>
-</div>
-
-<h2>Flagged transactions</h2>
-<div class="card">
-  <ul class="account-list" id="flags-list">
-    <li class="empty-state">Loading…</li>
-  </ul>
-</div>
-
-<h2>Linked institutions</h2>
-<div class="card">
-  <ul class="account-list" id="institution-list">
-    <li class="empty-state">Loading…</li>
-  </ul>
-</div>
-
-<h2>Linked accounts</h2>
-<div class="card">
-  <ul class="account-list" id="account-list">
-    <li class="empty-state">No accounts linked yet. Click "Connect account" to get started.</li>
-  </ul>
-</div>
-
-<h2>Spending by category (this month)</h2>
-<div class="card">
-  <div id="category-bars">
-    <div class="empty-state">No transactions yet. Link an account and sync transactions.</div>
-  </div>
+  <!-- Accounts -->
+  <section class="card span-12">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">Accounts</h2>
+        <div class="card-sub" id="accounts-sub">&nbsp;</div>
+      </div>
+    </div>
+    <div class="grid" id="institution-grid" style="gap:12px;"></div>
+  </section>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-function fmtDate(iso) {
-  return new Date(iso + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+const TIER_LABELS = {
+  fixed_obligation: "Bill",
+  subscription: "Subscription",
+  recurring_discretionary: "Frequent spending",
+  probable_recurrence: "Maybe recurring",
+  not_recurring: "Not recurring",
+  reliable_income: "Income",
+  probable_income: "Maybe income",
+};
+
+document.getElementById("today-label").textContent = new Date().toLocaleDateString("en-US", {
+  weekday: "long", month: "long", day: "numeric",
+});
+
+function stat(label, value, tone = "") {
+  return `<div><div class="kpi-label">${label}</div><div class="stat-value amount ${tone}">${value}</div></div>`;
 }
+
+// --- KPIs + categories ---------------------------------------------------------
 
 async function loadSummary() {
-  const summary = await apiFetch("/api/dashboard/summary");
-  document.getElementById("stat-cash").textContent = fmtMoney(summary.cash);
-  document.getElementById("stat-debt").textContent = fmtMoney(summary.debt);
-  document.getElementById("stat-net").textContent = fmtMoney(summary.net_position);
-  document.getElementById("stat-spent").textContent = fmtMoney(summary.month_spent);
-  document.getElementById("stat-income").textContent = fmtMoney(summary.month_income);
-  document.getElementById("stat-invested").textContent = fmtMoney(summary.month_invested);
-  document.getElementById("stat-interest").textContent = fmtMoney(summary.interest_paid_ttm);
-  document.getElementById("interest-note").textContent =
-    summary.interest_paid_ttm === 0
-      ? "No interest charged — carrying no revolving balance."
-      : "See critical alerts above for details.";
+  const s = await apiFetch("/api/dashboard/summary");
+  document.getElementById("kpi-networth").textContent = fmtMoneyWhole(s.net_worth);
+  document.getElementById("kpi-networth-sub").textContent = `${fmtMoneyWhole(s.investments)} invested · ${fmtMoneyWhole(s.cash)} cash`;
 
-  const barsEl = document.getElementById("category-bars");
-  if (summary.spend_by_category.length === 0) {
-    barsEl.innerHTML = '<div class="empty-state">No transactions yet. Link an account and sync transactions.</div>';
-  } else {
-    const max = Math.max(...summary.spend_by_category.map((r) => r.amount));
-    barsEl.innerHTML = summary.spend_by_category
-      .map(
-        (row) => `
-        <div class="bar-row">
-          <span>${row.category.replaceAll("_", " ")}</span>
-          <div class="bar-track"><div class="bar-fill" style="width:${(row.amount / max) * 100}%"></div></div>
-          <span class="bar-amount">${fmtMoney(row.amount)}</span>
-        </div>`
-      )
-      .join("");
-  }
-}
+  document.getElementById("kpi-cash").textContent = fmtMoney(s.cash);
+  document.getElementById("kpi-cash-sub").innerHTML =
+    `<span class="${s.liquid_position < 0 ? "delta-bad" : ""}">${fmtMoney(s.liquid_position)}</span> after paying cards in full`;
 
-async function loadAlerts() {
-  const alerts = await apiFetch("/api/dashboard/alerts");
-  const el = document.getElementById("alert-list");
-  if (alerts.length === 0) {
-    el.innerHTML = '<div class="empty-state">No critical alerts — you\'re in good shape.</div>';
+  document.getElementById("kpi-debt").textContent = fmtMoney(s.debt);
+  document.getElementById("kpi-debt-sub").textContent =
+    s.interest_paid_ttm > 0 ? `${fmtMoney(s.interest_paid_ttm)} interest paid in 12 mo` : "No interest paid in 12 months";
+
+  const net = s.month_income - s.month_spent;
+  document.getElementById("kpi-spent").textContent = fmtMoney(s.month_spent);
+  document.getElementById("kpi-spent-sub").innerHTML =
+    `${fmtMoney(s.month_income)} in · <span class="${net < 0 ? "delta-bad" : "delta-good"}">${net < 0 ? "−" : "+"}${fmtMoney(Math.abs(net))} net</span>`;
+
+  const el = document.getElementById("category-bars");
+  const rows = s.spend_by_category;
+  if (rows.length === 0) {
+    el.innerHTML = '<div class="empty">No spending yet this month.</div>';
     return;
   }
-  el.innerHTML = alerts
-    .map(
-      (a) => `
-      <div class="alert-row">
-        <span class="severity-badge severity-${a.severity}">${a.severity}</span>
-        <span>${a.message}</span>
-      </div>`
-    )
+  const max = Math.max(...rows.map((r) => r.amount));
+  document.getElementById("category-sub").textContent = `This month · ${fmtMoney(s.month_spent)} total`;
+  el.innerHTML = rows
+    .map((r) => `
+      <div class="bar-row">
+        <span class="label">${categoryLabel(r.category)}</span>
+        <div class="bar-track"><div class="bar-fill" style="width:${(r.amount / max) * 100}%"></div></div>
+        <span class="amount">${fmtMoneyWhole(r.amount)}</span>
+      </div>`)
     .join("");
+}
+
+// --- 14-day check + alerts -----------------------------------------------------
+
+async function loadAlerts() {
+  const data = await apiFetch("/api/dashboard/alerts");
+  const l = data.liquidity;
+  const tone = l.severity === "critical" ? "bad" : l.severity === "warning" ? "warn" : "good";
+  const verdict = {
+    bad: `Cash is projected to go negative (${fmtMoney(l.projected_minimum_cash)}) before income arrives.`,
+    warn: `Cash is projected to dip to ${fmtMoney(l.projected_minimum_cash)} — tight.`,
+    good: `You're covered — cash stays above ${fmtMoneyWhole(l.projected_minimum_cash)} at its lowest.`,
+  }[tone];
+  document.getElementById("liquidity").innerHTML = `
+    <div class="callout ${tone}"><span class="dot"></span><span>${verdict}</span></div>
+    <div class="ledger-row"><span>Cash now</span><span>${fmtMoney(l.available_cash)}</span></div>
+    <div class="ledger-row"><span>Paychecks expected</span><span>+${fmtMoney(l.expected_income_14d)}</span></div>
+    <div class="ledger-row"><span>Bills from checking</span><span>−${fmtMoney(l.confirmed_obligations_14d)}</span></div>
+    <div class="ledger-row"><span>Card payments due</span><span>−${fmtMoney(l.card_payments_14d)}</span></div>
+    <div class="ledger-row"><span>Everyday checking spend</span><span>−${fmtMoney(l.everyday_spending_14d)}</span></div>
+    <div class="ledger-row total"><span>Lowest point</span><span class="${tone === "bad" ? "delta-bad" : ""}">${fmtMoney(l.projected_minimum_cash)}</span></div>`;
+
+  document.getElementById("alert-list").innerHTML = data.alerts.length
+    ? `<div class="list-group-label" style="padding-top:16px">Alerts</div>` +
+      data.alerts
+        .map((a) => `<div class="callout ${a.severity === "critical" ? "bad" : "warn"}"><span class="dot"></span><span>${escapeHtml(a.message)}</span></div>`)
+        .join("")
+    : "";
+}
+
+// --- forecast ------------------------------------------------------------------
+
+const EVENT_KIND = { income: "Paycheck", bill: "Bill from checking", card_payment: "Card payment" };
+let forecastEvents = [];
+let recurringItems = null;
+
+async function loadForecast(floor) {
+  const data = await apiFetch(`/api/dashboard/forecast?safety_floor=${floor}`);
+  const series = data.series.map((p) => ({ value: p.projected_balance, label: fmtDate(p.date) }));
+  const lowestIndex = data.series.findIndex((p) => p.date === data.lowest_balance_date);
+  document.getElementById("forecast-chart").innerHTML =
+    svgLineChart(series, { markIndex: lowestIndex, floor }) || '<div class="chart-empty">Not enough data to forecast yet.</div>';
+  document.getElementById("forecast-stats").innerHTML =
+    stat("Paychecks", `+${fmtMoney(data.total_expected_income)}`, "in") +
+    stat("Bills from checking", `−${fmtMoney(data.total_expected_bills)}`) +
+    stat("Card payments", `−${fmtMoney(data.total_card_payments)}`) +
+    stat(`Everyday · ${fmtMoney(data.everyday_daily_rate)}/day`, `−${fmtMoney(data.total_everyday_spending)}`) +
+    stat("Spare above floor", fmtMoney(data.excess_liquidity));
+
+  forecastEvents = data.events;
+  const rows = data.events
+    .map((e) => `
+      <div class="row">
+        <div class="row-main">
+          <div class="row-title" style="font-weight:450">${escapeHtml(e.label)}</div>
+          <div class="row-sub">${EVENT_KIND[e.kind] || e.kind} · ${fmtDate(e.date)}</div>
+        </div>
+        <span class="amount ${e.amount > 0 ? "in" : ""}">${e.amount > 0 ? "+" : "−"}${fmtMoney(Math.abs(e.amount))}</span>
+      </div>`)
+    .join("");
+  document.getElementById("forecast-event-list").innerHTML = `${rows}
+    <div class="row">
+      <div class="row-main">
+        <div class="row-title" style="font-weight:450">Everyday checking spending</div>
+        <div class="row-sub">ATM, Zelle, debit purchases · ${fmtMoney(data.everyday_daily_rate)}/day, your 90-day average</div>
+      </div>
+      <span class="amount">−${fmtMoney(data.total_everyday_spending)}</span>
+    </div>
+    <div class="footnote">Card purchases aren't subtracted when you make them. They hit checking when you pay the card, which shows up as a card payment above.</div>`;
+  if (recurringItems) renderUpcoming(recurringItems);
+}
+
+// --- monthly -------------------------------------------------------------------
+
+async function loadMonthly() {
+  const rows = await apiFetch("/api/dashboard/monthly-summary?months=6");
+  document.getElementById("monthly-chart").innerHTML = svgGroupedBars(rows);
+}
+
+// --- recurring + upcoming ------------------------------------------------------
+
+function overrideSelect(item) {
+  const isIncome = item.tier.includes("income");
+  const options = Object.keys(TIER_LABELS)
+    .filter((t) => (isIncome ? t.includes("income") || t === "not_recurring" : !t.includes("income")))
+    .map((t) => `<option value="${t}" ${t === item.tier ? "selected" : ""}>${TIER_LABELS[t]}</option>`)
+    .join("");
+  const merchant = encodeURIComponent(item.canonical_merchant);
+  return `
+    <select class="mini-select override-select" data-merchant="${merchant}" aria-label="Classification">${options}</select>
+    ${item.overridden ? `<button class="link-btn reset-override" data-merchant="${merchant}" title="Use the automatic label">Reset</button>` : ""}`;
+}
+
+function recurringRow(r) {
+  const frequent = r.tier === "recurring_discretionary";
+  const bits = [
+    r.cadence_days ? `every ~${r.cadence_days} days` : "irregular",
+    `${r.transaction_count}×`,
+    r.paid_from === "card" && !r.tier.includes("income") ? "on card" : null,
+    !frequent && r.next_expected_date ? `next ${fmtRelativeDay(r.next_expected_date)}` : null,
+  ].filter(Boolean);
+  return `
+    <div class="row">
+      <div class="row-main">
+        <div class="row-title">${escapeHtml(r.canonical_merchant)}${r.overridden ? '<span class="badge">edited</span>' : ""}</div>
+        <div class="row-sub">${bits.join(" · ")}</div>
+      </div>
+      <div class="row-end">
+        <span class="amount ${r.tier.includes("income") ? "in" : ""}">${frequent ? "~" : ""}${fmtMoney(r.average_amount)}</span>
+        ${overrideSelect(r)}
+      </div>
+    </div>`;
+}
+
+const RECURRING_GROUPS = [
+  { title: "Income", tiers: ["reliable_income", "probable_income"], total: true },
+  { title: "Bills & subscriptions", tiers: ["fixed_obligation", "subscription"], total: true },
+  { title: "Maybe recurring · not counted in forecast", tiers: ["probable_recurrence"], total: false },
+];
+
+function renderUpcoming(items) {
+  const el = document.getElementById("upcoming-list");
+  const cardPayments = forecastEvents
+    .filter((e) => e.kind === "card_payment")
+    .map((e) => ({ canonical_merchant: e.label, tier: "card_payment", next_expected_date: e.date, average_amount: -e.amount }));
+  const upcoming = items
+    .filter((r) => ["fixed_obligation", "subscription", "reliable_income"].includes(r.tier) && r.next_expected_date)
+    .concat(cardPayments)
+    .filter((r) => daysFromToday(r.next_expected_date) >= 0 && daysFromToday(r.next_expected_date) <= 30)
+    .sort((a, b) => a.next_expected_date.localeCompare(b.next_expected_date));
+  if (upcoming.length === 0) {
+    el.innerHTML = '<li class="empty">Nothing expected in the next 30 days.</li>';
+    return;
+  }
+  const UPCOMING_MAX = 8;
+  const more = upcoming.length - UPCOMING_MAX;
+  el.innerHTML = upcoming
+    .slice(0, UPCOMING_MAX)
+    .map((r) => {
+      const d = new Date(r.next_expected_date + "T00:00:00");
+      const income = r.tier === "reliable_income";
+      return `
+        <li class="row">
+          <div class="row-lead">
+            <div class="date-chip"><div class="m">${d.toLocaleDateString("en-US", { month: "short" })}</div><div class="d">${d.getDate()}</div></div>
+            <div class="row-main">
+              <div class="row-title">${escapeHtml(r.canonical_merchant)}</div>
+              <div class="row-sub">${r.tier === "card_payment" ? "Card payment" : TIER_LABELS[r.tier]}${r.paid_from === "card" ? " · on card" : ""} · ${fmtRelativeDay(r.next_expected_date)}</div>
+            </div>
+          </div>
+          <span class="amount ${income ? "in" : ""}">${income ? "+" : ""}${fmtMoney(r.average_amount)}</span>
+        </li>`;
+    })
+    .join("") + (more > 0 ? `<li class="row-sub" style="padding-top:10px">+${more} more later this month — see Recurring below</li>` : "");
+}
+
+async function loadRecurring() {
+  const [spend, income] = await Promise.all([apiFetch("/api/dashboard/recurring"), apiFetch("/api/dashboard/recurring/income")]);
+  const items = [...spend, ...income].filter((r) => r.tier !== "not_recurring");
+  recurringItems = items;
+  renderUpcoming(items);
+
+  const el = document.getElementById("recurring-list");
+  if (items.length === 0) {
+    el.innerHTML = '<div class="empty">No recurring activity detected yet.</div>';
+    return;
+  }
+  const byAmount = (a, b) => b.average_amount - a.average_amount;
+  let html = RECURRING_GROUPS.map((g) => {
+    const rows = items.filter((r) => g.tiers.includes(r.tier)).sort(byAmount);
+    if (!rows.length) return "";
+    const total = rows.reduce((sum, r) => sum + r.average_amount, 0);
+    return `<div class="list-group-label split"><span>${g.title}</span><span class="num">${g.total ? fmtMoney(total) : ""}</span></div>
+      <div class="list">${rows.map(recurringRow).join("")}</div>`;
+  }).join("");
+
+  // Places you shop often repeat but aren't bills; keep them out of the way.
+  const frequent = items.filter((r) => r.tier === "recurring_discretionary").sort(byAmount);
+  if (frequent.length) {
+    html += `<details class="disclosure">
+      <summary>Frequent spending · ${frequent.length} places you shop often (not bills)</summary>
+      <div class="list" style="margin-top:6px">${frequent.map(recurringRow).join("")}</div>
+    </details>`;
+  }
+  el.innerHTML = html;
+
+  el.querySelectorAll(".override-select").forEach((select) =>
+    select.addEventListener("change", async (e) => {
+      const merchant = decodeURIComponent(e.target.dataset.merchant);
+      try {
+        await apiFetch(`/api/dashboard/recurring/${encodeURIComponent(merchant)}/override`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ classification: e.target.value }),
+        });
+        showToast(`${merchant} → ${TIER_LABELS[e.target.value]}`);
+        await refreshCashViews();
+      } catch (err) {
+        showToast(err.message);
+      }
+    })
+  );
+  el.querySelectorAll(".reset-override").forEach((btn) =>
+    btn.addEventListener("click", async (e) => {
+      const merchant = decodeURIComponent(e.target.dataset.merchant);
+      try {
+        await apiFetch(`/api/dashboard/recurring/${encodeURIComponent(merchant)}/override`, { method: "DELETE" });
+        showToast(`${merchant} reset to automatic label`);
+        await refreshCashViews();
+      } catch (err) {
+        showToast(err.message);
+      }
+    })
+  );
+}
+
+// --- net worth -----------------------------------------------------------------
+
+let netWorthData = null;
+const nwView = { days: 0, years: 0 };
+
+function renderNetWorthChart() {
+  const data = netWorthData;
+  if (!data) return;
+  const history = data.history.map((p) => ({ date: p.date, value: p.net_worth, estimated: p.estimated }));
+  const last = history[history.length - 1];
+  let shown = history;
+  if (nwView.days && last) {
+    const cutoff = new Date(last.date + "T00:00:00").getTime() - nwView.days * 86400000;
+    shown = history.filter((p) => new Date(p.date + "T00:00:00").getTime() >= cutoff);
+  }
+  const projection = nwView.years
+    ? data.projection_series.slice(0, nwView.years * 12).map((p) => ({ date: p.date, value: p.net_worth }))
+    : [];
+
+  const el = document.getElementById("networth-chart");
+  el.innerHTML = svgTimeChart(shown, projection) || '<div class="chart-empty">Not enough history in this range.</div>';
+  wireTimeChart(el);
+
+  document.getElementById("nw-current").textContent = last ? fmtMoneyWhole(last.value) : "—";
+  if (shown.length >= 2) {
+    const first = shown[0];
+    const change = last.value - first.value;
+    const pctChange = first.value ? change / Math.abs(first.value) : 0;
+    document.getElementById("nw-change").innerHTML =
+      `<span class="${change < 0 ? "delta-bad" : "delta-good"}">${change < 0 ? "−" : "+"}${fmtMoneyWhole(Math.abs(change))} (${change < 0 ? "−" : "+"}${(Math.abs(pctChange) * 100).toFixed(1)}%)</span> since ${fmtDate(first.date, { month: "short", day: "numeric", year: "numeric" })}` +
+      (projection.length ? ` · <span class="delta-good">${fmtMoneyWhole(projection[projection.length - 1].value)}</span> projected by ${fmtDate(projection[projection.length - 1].date, { month: "short", year: "numeric" })}` : "");
+  } else {
+    document.getElementById("nw-change").textContent = "";
+  }
+
+  const hasEstimated = shown.some((p) => p.estimated);
+  document.getElementById("nw-legend").innerHTML = [
+    hasEstimated ? '<span><i style="background:var(--series-1);opacity:.55"></i>Estimated from transactions</span>' : "",
+    '<span><i style="background:var(--series-1)"></i>Synced balances</span>',
+    projection.length ? `<span><i style="background:var(--good)"></i>Projection at ${data.annual_return_pct}% return, ${data.monthly_net_savings < 0 ? "−" : "+"}${fmtMoneyWhole(Math.abs(data.monthly_net_savings))}/mo</span>` : "",
+  ].join("");
 }
 
 async function loadNetWorth(annualReturnPct) {
   const data = await apiFetch(`/api/dashboard/networth?annual_return_pct=${annualReturnPct}`);
-  const current = data.history.length ? data.history[data.history.length - 1].net_worth : 0;
-  document.getElementById("net-worth-current").textContent = fmtMoney(current);
-  document.getElementById("net-worth-since").textContent = data.tracking_since
-    ? `tracking since ${fmtDate(data.tracking_since)} · ${fmtMoney(data.monthly_net_savings)}/mo avg net savings`
-    : "tracking starts with your next sync";
+  netWorthData = data;
+  const savings = data.monthly_net_savings;
+  const estimatedNote = data.reconstructed_until
+    ? ` · through ${fmtDate(data.reconstructed_until)} is estimated from transactions (investment market moves not included)`
+    : "";
+  document.getElementById("networth-sub").innerHTML = data.tracking_since
+    ? `Since ${fmtDate(data.tracking_since, { month: "short", day: "numeric", year: "numeric" })} · averaging <span class="${savings < 0 ? "delta-bad" : "delta-good"}">${savings < 0 ? "−" : "+"}${fmtMoneyWhole(Math.abs(savings))}/mo</span> saved${estimatedNote}`
+    : "Tracking starts with your next sync";
 
-  const noteEl = document.getElementById("net-worth-note");
-  if (data.history.length < 30) {
-    noteEl.style.display = "block";
-    noteEl.textContent =
-      "Balance history just started — projections below are rough estimates that will sharpen as more history accumulates.";
-  } else {
-    noteEl.style.display = "none";
-  }
+  renderNetWorthChart();
 
-  document.getElementById("projection-body").innerHTML = data.projection
-    .map((p) => `<tr><td>${p.years} year${p.years > 1 ? "s" : ""}</td><td class="amount">${fmtMoney(p.projected_value)}</td></tr>`)
+  const rough = data.data_confidence !== "established";
+  document.getElementById("projection-stats").innerHTML = data.projection
+    .map((p) => stat(`In ${p.years} year${p.years > 1 ? "s" : ""}${rough ? " (rough)" : ""}`, fmtMoneyWhole(p.projected_value)))
     .join("");
 }
 
-async function loadRecurring() {
-  const bills = await apiFetch("/api/dashboard/recurring");
-  const el = document.getElementById("recurring-list");
-  if (bills.length === 0) {
-    el.innerHTML = '<li class="empty-state">No recurring bills detected yet.</li>';
-    return;
-  }
-  el.innerHTML = bills
-    .map(
-      (b) => `
-      <li class="account-row">
-        <div>
-          <div class="name">${b.merchant}</div>
-          <div class="sub">every ~${b.cadence_days} days · next expected ${fmtDate(b.next_expected_date)}</div>
-        </div>
-        <div class="balance">${fmtMoney(b.average_amount)}</div>
-      </li>`
-    )
-    .join("");
+function wireSegmented(id, key, attr) {
+  const group = document.getElementById(id);
+  group.querySelectorAll("button").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      group.querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b === btn)));
+      nwView[key] = Number(btn.dataset[attr]);
+      renderNetWorthChart();
+    })
+  );
 }
+wireSegmented("nw-range", "days", "days");
+wireSegmented("nw-projection", "years", "years");
+
+// --- flags ---------------------------------------------------------------------
 
 async function loadFlags() {
   const flags = await apiFetch("/api/dashboard/flags");
   const el = document.getElementById("flags-list");
   if (flags.length === 0) {
-    el.innerHTML = '<li class="empty-state">Nothing flagged in the last 6 months.</li>';
+    el.innerHTML = '<li class="empty">Nothing unusual in the last 6 months.</li>';
     return;
   }
   el.innerHTML = flags
-    .map(
-      (f) => `
-      <li class="account-row">
-        <div>
-          <div class="name">${f.name}</div>
-          <div class="sub">${fmtDate(f.date)} · ${f.reason}</div>
+    .map((f) => `
+      <li class="row">
+        <div class="row-main">
+          <div class="row-title">${escapeHtml(f.name)}</div>
+          <div class="row-sub">${fmtDate(f.date)} · ${escapeHtml(f.reason)}</div>
         </div>
-        <div class="balance">${fmtMoney(f.amount)}</div>
-      </li>`
-    )
+        <span class="amount">${fmtMoney(f.amount)}</span>
+      </li>`)
     .join("");
 }
 
-async function loadInstitutions() {
-  const institutions = await apiFetch("/api/accounts/institutions");
-  const el = document.getElementById("institution-list");
-  if (institutions.length === 0) {
-    el.innerHTML = '<li class="empty-state">No institutions linked yet.</li>';
-    return;
-  }
-  el.innerHTML = institutions
-    .map(
-      (inst) => `
-      <li class="account-row">
-        <div>
-          <div class="name">${inst.institution_name}</div>
-          <div class="sub">${inst.account_count} account${inst.account_count === 1 ? "" : "s"}</div>
-        </div>
-        <span class="delete-link" data-item-id="${inst.item_id}">Disconnect</span>
-      </li>`
-    )
-    .join("");
+// --- accounts ------------------------------------------------------------------
 
-  el.querySelectorAll(".delete-link").forEach((link) => {
-    link.addEventListener("click", async () => {
-      if (!confirm("Disconnect this institution? Its accounts and transaction history will be removed locally until you relink.")) return;
+const ACCOUNT_TYPE_LABEL = { depository: "Cash", credit: "Credit card", investment: "Investment", loan: "Loan" };
+
+function wireDisconnect(slot) {
+  const reset = () => {
+    slot.innerHTML = '<button class="link-btn disconnect">Disconnect</button>';
+    slot.querySelector(".disconnect").addEventListener("click", ask);
+  };
+  const ask = () => {
+    slot.innerHTML = `<span class="confirm-bar">Remove?
+      <button class="btn secondary" style="height:24px;padding:0 8px;font-size:12px" data-act="yes">Remove</button>
+      <button class="link-btn" data-act="no">Cancel</button></span>`;
+    slot.querySelector('[data-act="no"]').addEventListener("click", reset);
+    slot.querySelector('[data-act="yes"]').addEventListener("click", async () => {
       try {
-        await apiFetch(`/api/accounts/institutions/${link.dataset.itemId}`, { method: "DELETE" });
-        showToast("Institution disconnected");
+        await apiFetch(`/api/accounts/institutions/${slot.dataset.itemId}`, { method: "DELETE" });
+        showToast(`${slot.dataset.name} disconnected`);
         await loadDashboard();
       } catch (err) {
         showToast(err.message);
+        reset();
       }
     });
-  });
+  };
+  reset();
 }
 
 async function loadAccounts() {
-  const accounts = await apiFetch("/api/accounts");
-  const listEl = document.getElementById("account-list");
-  if (accounts.length === 0) {
-    listEl.innerHTML = '<li class="empty-state">No accounts linked yet. Click "Connect account" to get started.</li>';
-  } else {
-    listEl.innerHTML = accounts
-      .map(
-        (a) => `
-        <li class="account-row">
-          <div>
-            <div class="name">${a.name}</div>
-            <div class="sub">${a.institution_name} · ${a.subtype}${a.mask ? " ···" + a.mask : ""}</div>
-          </div>
-          <div class="balance">${a.current_balance != null ? fmtMoney(a.current_balance) : "—"}</div>
-        </li>`
-      )
-      .join("");
+  const [accounts, institutions, holdings] = await Promise.all([
+    apiFetch("/api/accounts"),
+    apiFetch("/api/accounts/institutions"),
+    apiFetch("/api/dashboard/holdings"),
+  ]);
+  document.getElementById("accounts-sub").textContent =
+    `${accounts.length} account${accounts.length === 1 ? "" : "s"} at ${institutions.length} institution${institutions.length === 1 ? "" : "s"}`;
+
+  const grid = document.getElementById("institution-grid");
+  if (institutions.length === 0) {
+    grid.innerHTML = '<div class="span-12 empty">No accounts linked yet. Use "Connect account" in the sidebar.</div>';
+    return;
   }
+  grid.innerHTML = institutions
+    .map((inst) => {
+      const rows = accounts.filter((a) => a.institution_name === inst.institution_name);
+      const instHoldings = holdings.filter((h) => rows.some((a) => a.name === h.account_name));
+      return `
+        <div class="span-3" style="border:1px solid var(--line); border-radius:var(--radius-sm); padding:12px 14px;">
+          <div class="split" style="align-items:center; margin-bottom:4px;">
+            <strong>${escapeHtml(inst.institution_name)}</strong>
+            <span class="disconnect-slot" data-item-id="${inst.item_id}" data-name="${escapeHtml(inst.institution_name)}"></span>
+          </div>
+          <div class="list">
+            ${rows
+              .map((a) => `
+              <div class="row">
+                <div class="row-main">
+                  <a class="row-title account-link" href="/transactions?account=${encodeURIComponent(a.account_id)}" style="font-weight:450">${escapeHtml(a.name)}</a>
+                  <div class="row-sub">${ACCOUNT_TYPE_LABEL[a.type] || a.subtype}${a.mask ? ` ··${a.mask}` : ""}</div>
+                </div>
+                <span class="amount">${a.current_balance != null ? (a.type === "credit" && a.current_balance > 0 ? "−" : "") + fmtMoney(a.current_balance) : "—"}</span>
+              </div>`)
+              .join("")}
+          </div>
+          ${instHoldings.length ? `<details class="disclosure"><summary>${instHoldings.length} holdings</summary><div class="list">${instHoldings
+            .map((h) => `<div class="row"><div class="row-main"><div class="row-title">${escapeHtml(h.ticker_symbol || h.security_name || "Position")}</div>
+              <div class="row-sub">${h.quantity != null ? `${+h.quantity.toFixed(4)} shares` : ""}</div></div>
+              <span class="amount">${h.institution_value != null ? fmtMoney(h.institution_value) : "—"}</span></div>`)
+            .join("")}</div></details>` : ""}
+        </div>`;
+    })
+    .join("");
+  grid.querySelectorAll(".disconnect-slot").forEach(wireDisconnect);
 }
 
-async function loadDashboard() {
-  const returnRate = parseFloat(document.getElementById("return-rate").value) || 0;
-  await Promise.all([
+// --- wiring --------------------------------------------------------------------
+
+const safetyFloor = () => parseFloat(document.getElementById("safety-floor").value) || 0;
+const returnRate = () => parseFloat(document.getElementById("return-rate").value) || 0;
+
+function refreshCashViews() {
+  return Promise.all([loadRecurring(), loadAlerts(), loadForecast(safetyFloor())]);
+}
+
+function loadDashboard() {
+  // allSettled: one failing section shouldn't blank out the rest.
+  return Promise.allSettled([
     loadSummary(),
     loadAlerts(),
-    loadNetWorth(returnRate),
+    loadForecast(safetyFloor()),
+    loadMonthly(),
     loadRecurring(),
+    loadNetWorth(returnRate()),
     loadFlags(),
-    loadInstitutions(),
     loadAccounts(),
-  ]);
+  ]).then((results) => results.filter((r) => r.status === "rejected").forEach((r) => showToast(r.reason.message)));
 }
 
-document.getElementById("connect-btn").addEventListener("click", () => connectAccount(loadDashboard));
-
-document.getElementById("return-rate").addEventListener("change", async (e) => {
-  await loadNetWorth(parseFloat(e.target.value) || 0);
-});
-
-document.getElementById("sync-btn").addEventListener("click", async (e) => {
-  e.target.disabled = true;
-  try {
-    const result = await apiFetch("/api/sync/full", { method: "POST" });
-    showToast(`Synced: ${result.added} added, ${result.modified} updated, ${result.removed} removed`);
-    await loadDashboard();
-  } catch (err) {
-    showToast(err.message);
-  } finally {
-    e.target.disabled = false;
-  }
-});
-
-loadDashboard().catch((err) => showToast(err.message));
+onDataChanged = loadDashboard;
+document.getElementById("safety-floor").addEventListener("change", () => loadForecast(safetyFloor()).catch((e) => showToast(e.message)));
+document.getElementById("return-rate").addEventListener("change", () => loadNetWorth(returnRate()).catch((e) => showToast(e.message)));
+loadDashboard();
 </script>
 {% endblock %}

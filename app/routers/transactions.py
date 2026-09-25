@@ -1,10 +1,12 @@
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app import plaid_client
+from app import analytics, plaid_client
 from app.database import get_db
+from app.merchant import normalize_merchant
 from app.models import Account, PlaidItem, Transaction
 from app.schemas import SyncResult, TransactionOut
 
@@ -34,6 +36,8 @@ def _upsert_transaction(db: Session, account_by_plaid_id: dict[str, Account], tx
     existing.pending = txn.pending
     existing.category_primary = category_primary
     existing.category_detailed = category_detailed
+    institution_name = account.item.institution_name if account.item else ""
+    existing.canonical_merchant = normalize_merchant(txn.name, txn.merchant_name, institution_name)
 
 
 @router.post("/sync", response_model=SyncResult)
@@ -75,6 +79,7 @@ def list_transactions(
     start_date: date | None = None,
     end_date: date | None = None,
     q: str | None = None,
+    include_internal: bool = True,
     limit: int = Query(100, le=500),
     offset: int = 0,
 ):
@@ -89,16 +94,45 @@ def list_transactions(
         query = query.filter(Transaction.date <= end_date)
     if q:
         like = f"%{q}%"
-        query = query.filter(Transaction.name.ilike(like))
+        query = query.filter(
+            or_(Transaction.name.ilike(like), Transaction.merchant_name.ilike(like), Transaction.canonical_merchant.ilike(like))
+        )
+
+    if not include_internal:
+        query = query.filter(Transaction.is_internal_transfer.is_(False))
 
     rows = query.order_by(Transaction.date.desc()).offset(offset).limit(limit).all()
+
+    matched_ids = [t.matched_transaction_id for t in rows if t.matched_transaction_id]
+    matched = {t.id: t for t in db.query(Transaction).filter(Transaction.id.in_(matched_ids)).all()} if matched_ids else {}
 
     out = []
     for txn in rows:
         data = TransactionOut.model_validate(txn)
         data.account_name = txn.account.name
+        partner = matched.get(txn.matched_transaction_id)
+        if partner is not None and partner.account is not None:
+            partner_account = partner.account
+            data.counterparty_account = (
+                analytics.card_display_name(partner_account) if partner_account.type == "credit" else partner_account.name
+            )
         out.append(data)
     return out
+
+
+@router.get("/summary")
+def transactions_summary(
+    db: Session = Depends(get_db),
+    account_id: str | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+):
+    account = None
+    if account_id:
+        account = db.query(Account).filter_by(account_id=account_id).one_or_none()
+        if account is None:
+            raise HTTPException(status_code=404, detail="Account not found")
+    return analytics.account_summary(db, account, start_date, end_date)
 
 
 @router.get("/categories")

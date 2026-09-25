@@ -1,79 +1,126 @@
 {% extends "base.html" %}
 {% block title %}Transactions · Finance Tracker{% endblock %}
 {% block content %}
-<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:20px;">
-  <h1>Transactions</h1>
-  <button class="btn secondary" id="sync-btn">Sync transactions</button>
-</div>
-
-<div class="filters">
-  <input type="text" id="filter-q" placeholder="Search by name…" />
-  <select id="filter-category"><option value="">All categories</option></select>
-  <input type="date" id="filter-start" />
-  <input type="date" id="filter-end" />
-</div>
-
-<div class="card">
-  <table>
-    <thead>
-      <tr>
-        <th>Date</th>
-        <th>Name</th>
-        <th>Account</th>
-        <th>Category</th>
-        <th style="text-align:right">Amount</th>
-      </tr>
-    </thead>
-    <tbody id="txn-body">
-      <tr><td colspan="5" class="empty-state">Loading…</td></tr>
-    </tbody>
-  </table>
-  <div style="text-align:center; margin-top:12px;">
-    <button class="btn secondary" id="load-more-btn">Load more</button>
+<div class="page-head">
+  <div>
+    <h1>Transactions</h1>
+    <div class="sub" id="txn-count">&nbsp;</div>
   </div>
 </div>
+
+<div id="summary" class="grid" style="margin-bottom:16px"></div>
+
+<section class="card flush">
+  <div class="toolbar">
+    <input class="input search" type="search" id="filter-q" placeholder="Search merchant or description…" />
+    <select class="select" id="filter-category"><option value="">All categories</option></select>
+    <select class="select" id="filter-account"><option value="">All accounts</option></select>
+    <label class="input-group">From <input class="input" type="date" id="filter-start" style="width:auto" /></label>
+    <label class="input-group">To <input class="input" type="date" id="filter-end" style="width:auto" /></label>
+    <label class="input-group toggle"><input type="checkbox" id="filter-hide-internal" /> Hide card payments &amp; transfers</label>
+    <button class="btn ghost" id="clear-filters" type="button" hidden>Clear</button>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Merchant</th>
+          <th>Category</th>
+          <th>Account</th>
+          <th class="amount">Amount</th>
+        </tr>
+      </thead>
+      <tbody id="txn-body">
+        <tr><td colspan="4"><span class="skeleton"></span></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div style="text-align:center; padding:14px;">
+    <button class="btn secondary" id="load-more-btn" type="button" hidden>Load more</button>
+  </div>
+</section>
 {% endblock %}
 
 {% block scripts %}
 <script>
-let offset = 0;
 const LIMIT = 50;
+let offset = 0;
+let lastDay = null;
+let loaded = 0;
+
+const FILTER_IDS = ["filter-q", "filter-category", "filter-account", "filter-start", "filter-end"];
 
 function currentFilters() {
   const params = new URLSearchParams();
-  const q = document.getElementById("filter-q").value.trim();
-  const category = document.getElementById("filter-category").value;
-  const start = document.getElementById("filter-start").value;
-  const end = document.getElementById("filter-end").value;
-  if (q) params.set("q", q);
-  if (category) params.set("category", category);
-  if (start) params.set("start_date", start);
-  if (end) params.set("end_date", end);
+  const map = { "filter-q": "q", "filter-category": "category", "filter-account": "account_id", "filter-start": "start_date", "filter-end": "end_date" };
+  for (const id of FILTER_IDS) {
+    const v = document.getElementById(id).value.trim();
+    if (v) params.set(map[id], v);
+  }
+  document.getElementById("clear-filters").hidden = [...params.keys()].length === 0;
+  if (document.getElementById("filter-hide-internal").checked) params.set("include_internal", "false");
   return params;
+}
+
+function dayLabel(iso) {
+  const d = daysFromToday(iso);
+  if (d === 0) return "Today";
+  if (d === -1) return "Yesterday";
+  return fmtDate(iso, { weekday: "short", month: "short", day: "numeric", year: iso.slice(0, 4) === String(new Date().getFullYear()) ? undefined : "numeric" });
+}
+
+function rowHtml(t) {
+  // Plaid amounts are positive for money out, negative for money in.
+  // Card payments and transfers between your own accounts are neither
+  // income nor spending, so they get a neutral amount and their own label.
+  const internal = t.is_credit_card_payment || t.is_internal_transfer;
+  const incoming = t.amount < 0 && !internal;
+  let title = t.canonical_merchant || t.merchant_name || t.name;
+  if (t.is_credit_card_payment && t.counterparty_account) {
+    title = t.amount > 0 ? `Payment to ${t.counterparty_account}` : `Payment from ${t.counterparty_account}`;
+  } else if (t.is_credit_card_payment) {
+    title = t.amount > 0 ? "Card payment" : "Payment received";
+  }
+  const showRaw = t.name && t.name.toLowerCase() !== title.toLowerCase();
+  const category = t.is_credit_card_payment
+    ? '<span class="badge neutral" title="Moves money from checking to a card — not income or spending">Card payment</span>'
+    : t.is_internal_transfer
+      ? '<span class="badge neutral" title="Between your own accounts — not counted as income or spending">Transfer</span>'
+      : `<span class="badge">${categoryLabel(t.category_primary)}</span>`;
+  const sign = incoming ? "+" : "";
+  return `
+    <tr class="${internal ? "internal" : ""}">
+      <td>
+        <div class="cell-title">${escapeHtml(title)} ${t.pending ? '<span class="badge warn">Pending</span>' : ""}</div>
+        ${showRaw ? `<div class="cell-sub" title="${escapeHtml(t.name)}">${escapeHtml(t.name)}</div>` : ""}
+      </td>
+      <td>${category}</td>
+      <td class="muted">${escapeHtml(t.account_name)}</td>
+      <td class="amount ${incoming ? "in" : internal ? "neutral" : ""}">${sign}${fmtMoney(Math.abs(t.amount))}</td>
+    </tr>`;
 }
 
 function renderRows(rows, append) {
   const body = document.getElementById("txn-body");
-  if (!append) body.innerHTML = "";
+  if (!append) {
+    body.innerHTML = "";
+    lastDay = null;
+    loaded = 0;
+  }
   if (rows.length === 0 && !append) {
-    body.innerHTML = '<tr><td colspan="5" class="empty-state">No transactions found.</td></tr>';
+    body.innerHTML = '<tr><td colspan="4" class="empty">No transactions match these filters.</td></tr>';
     return;
   }
-  body.insertAdjacentHTML(
-    "beforeend",
-    rows
-      .map(
-        (t) => `
-      <tr>
-        <td>${t.date}</td>
-        <td>${t.merchant_name || t.name}${t.pending ? " (pending)" : ""}</td>
-        <td>${t.account_name}</td>
-        <td>${t.category_primary.replaceAll("_", " ")}</td>
-        <td class="amount">${fmtMoney(t.amount)}</td>
-      </tr>`
-      )
-      .join("")
-  );
+  let html = "";
+  for (const t of rows) {
+    if (t.date !== lastDay) {
+      html += `<tr class="day-row"><td colspan="4">${dayLabel(t.date)}</td></tr>`;
+      lastDay = t.date;
+    }
+    html += rowHtml(t);
+  }
+  body.insertAdjacentHTML("beforeend", html);
+  loaded += rows.length;
 }
 
 async function loadTransactions(append = false) {
@@ -84,42 +131,191 @@ async function loadTransactions(append = false) {
   const rows = await apiFetch(`/api/transactions?${params.toString()}`);
   renderRows(rows, append);
   offset += rows.length;
-  document.getElementById("load-more-btn").style.display = rows.length < LIMIT ? "none" : "inline-block";
+  const more = rows.length === LIMIT;
+  document.getElementById("load-more-btn").hidden = !more;
+  document.getElementById("txn-count").textContent = loaded
+    ? `Showing ${loaded}${more ? "+" : ""} transaction${loaded === 1 ? "" : "s"}`
+    : "No transactions";
 }
 
-async function loadCategories() {
-  const categories = await apiFetch("/api/transactions/categories");
-  const select = document.getElementById("filter-category");
-  categories.forEach((c) => {
-    const opt = document.createElement("option");
-    opt.value = c;
-    opt.textContent = c.replaceAll("_", " ");
-    select.appendChild(opt);
-  });
+async function loadFilterOptions() {
+  const [categories, accounts] = await Promise.all([apiFetch("/api/transactions/categories"), apiFetch("/api/accounts")]);
+  const catSel = document.getElementById("filter-category");
+  categories
+    .map((c) => [c, categoryLabel(c)])
+    .sort((a, b) => a[1].localeCompare(b[1]))
+    .forEach(([value, label]) => catSel.add(new Option(label, value)));
+  const acctSel = document.getElementById("filter-account");
+  accounts.forEach((a) => acctSel.add(new Option(`${a.name}${a.mask ? ` ··${a.mask}` : ""}`, a.account_id)));
 }
 
-["filter-q", "filter-category", "filter-start", "filter-end"].forEach((id) => {
-  document.getElementById(id).addEventListener("change", () => loadTransactions(false));
-});
-document.getElementById("filter-q").addEventListener("keyup", (e) => {
-  if (e.key === "Enter") loadTransactions(false);
-});
-document.getElementById("load-more-btn").addEventListener("click", () => loadTransactions(true));
+// --- summary header --------------------------------------------------------------
 
-document.getElementById("sync-btn").addEventListener("click", async (e) => {
-  e.target.disabled = true;
-  try {
-    const result = await apiFetch("/api/transactions/sync", { method: "POST" });
-    showToast(`Synced: ${result.added} added, ${result.modified} updated, ${result.removed} removed`);
-    await loadTransactions(false);
-  } catch (err) {
-    showToast(err.message);
-  } finally {
-    e.target.disabled = false;
+function kpi(label, value, sub = "", extra = "") {
+  return `<section class="card span-3 ${extra}">
+    <div class="kpi-label">${label}</div>
+    <div class="kpi-value">${value}</div>
+    <div class="kpi-sub">${sub || "&nbsp;"}</div>
+  </section>`;
+}
+
+function pct(v, digits = 0) {
+  return `${(v * 100).toFixed(digits)}%`;
+}
+
+function periodLabel(s) {
+  const custom = document.getElementById("filter-start").value || document.getElementById("filter-end").value;
+  return custom ? `${fmtDate(s.start_date)} – ${fmtDate(s.end_date)}` : `last ${s.window_days} days`;
+}
+
+function kpisFor(s) {
+  const c = s.credit, cash = s.cash, inv = s.investment;
+  if (c) {
+    const util = c.utilization != null ? `${pct(c.utilization, c.utilization < 0.1 ? 1 : 0)} of ${fmtMoneyWhole(c.credit_limit)} limit used` : "";
+    let dueValue = "—", dueSub = "No statement data from this bank";
+    if (c.due_date) {
+      dueValue = fmtDate(c.due_date);
+      const when = c.is_overdue ? '<span class="delta-bad">Overdue</span>' : c.days_until_due === 0 ? "today" : `in ${c.days_until_due} day${c.days_until_due === 1 ? "" : "s"}`;
+      const left = c.statement_remaining != null ? `${fmtMoney(c.statement_remaining)} left of ${fmtMoney(c.statement_balance)} statement` : "";
+      dueSub = [when, left].filter(Boolean).join(" · ");
+    }
+    const minDue = c.minimum_payment != null
+      ? (c.minimum_payment === 0 ? "Minimum met" : `Minimum ${fmtMoney(c.minimum_payment)}`)
+      : "";
+    const interestSub = [c.apr != null ? `APR ${c.apr.toFixed(2)}%` : null, s.interest_window ? `${fmtMoney(s.interest_window)} this period` : null]
+      .filter(Boolean).join(" · ") || "None charged";
+    return (
+      kpi("Amount owed", fmtMoney(c.owed), util, "kpi-hero") +
+      kpi("Payment due", dueValue, [dueSub, minDue].filter(Boolean).join(" · ")) +
+      kpi("Last payment", c.last_payment_amount != null ? fmtMoney(c.last_payment_amount) : "—", c.last_payment_date ? fmtRelativeDay(c.last_payment_date) : "") +
+      kpi("Interest · 12 months", fmtMoney(s.interest_ttm), interestSub)
+    );
   }
-});
+  if (cash) {
+    return (
+      kpi("Balance", fmtMoney(s.balance), s.available != null ? `${fmtMoney(s.available)} available` : "", "kpi-hero") +
+      kpi(`Money in · ${periodLabel(s)}`, `<span class="delta-good">+${fmtMoney(cash.money_in)}</span>`, cash.last_paycheck ? `Last paycheck ${fmtMoney(cash.last_paycheck.amount)} · ${fmtRelativeDay(cash.last_paycheck.date)}` : "") +
+      kpi(`Money out · ${periodLabel(s)}`, fmtMoney(cash.money_out), cash.card_payments ? `Plus ${fmtMoney(cash.card_payments)} in card payments` : "") +
+      kpi("Fees · 12 months", fmtMoney(s.fees_ttm), s.interest_ttm ? `${fmtMoney(s.interest_ttm)} interest` : "No interest charged")
+    );
+  }
+  if (inv) {
+    return (
+      kpi("Balance", fmtMoney(s.balance), "", "kpi-hero") +
+      kpi("Holdings", inv.holdings_count ? fmtMoney(inv.holdings_value) : "—", inv.holdings_count ? `${inv.holdings_count} positions` : "Not reported by this broker yet") +
+      kpi("Unrealized gain", inv.unrealized_gain != null ? `<span class="${inv.unrealized_gain < 0 ? "delta-bad" : "delta-good"}">${inv.unrealized_gain < 0 ? "−" : "+"}${fmtMoney(Math.abs(inv.unrealized_gain))}</span>` : "—", inv.cost_basis ? `on ${fmtMoney(inv.cost_basis)} cost basis` : "") +
+      kpi("Contributions · 12 months", fmtMoney(inv.contributions_12m), "Sent from your bank accounts to investing")
+    );
+  }
+  return (
+    kpi(`Spent · ${periodLabel(s)}`, fmtMoney(s.spend_total), "All accounts, excluding transfers", "kpi-hero") +
+    kpi(`Money in · ${periodLabel(s)}`, `<span class="delta-good">+${fmtMoney(s.inflow_total)}</span>`, "Paychecks, refunds and money received") +
+    kpi("Average per day", fmtMoney(s.average_daily_spend), `${s.transaction_count} transactions`) +
+    kpi("Fees & interest · 12 months", fmtMoney(s.fees_ttm + s.interest_ttm), s.interest_ttm ? `${fmtMoney(s.interest_ttm)} interest` : "No interest charged")
+  );
+}
 
-loadCategories().catch(() => {});
-loadTransactions(false).catch((err) => showToast(err.message));
+function spendingCard(s) {
+  const delta = s.spend_prev_total > 0 ? (s.spend_total - s.spend_prev_total) / s.spend_prev_total : null;
+  let deltaHtml = "";
+  if (delta != null && Math.abs(delta) < 0.02) {
+    deltaHtml = `About the same as the previous ${s.window_days} days`;
+  } else if (delta != null) {
+    deltaHtml = `<span class="${delta > 0 ? "delta-bad" : "delta-good"}">${delta > 0 ? "▲" : "▼"} ${pct(Math.abs(delta))}</span> vs previous ${s.window_days} days (${fmtMoneyWhole(s.spend_prev_total)})`;
+  }
+  const recurring = s.recurring.length
+    ? `<div class="list-group-label" style="padding-top:14px">Recurring on ${s.scope === "all" ? "your accounts" : "this account"}</div>
+       <div class="list">${s.recurring.slice(0, 6).map((r) => `
+         <div class="row"><div class="row-main"><div class="row-title" style="font-weight:450">${escapeHtml(r.name)}</div>
+         <div class="row-sub">${r.next_date ? `next ${fmtRelativeDay(r.next_date)}` : ""}</div></div>
+         <span class="amount">${fmtMoney(r.amount)}</span></div>`).join("")}</div>`
+    : "";
+  return `<section class="card span-4">
+    <div class="card-head"><div><h2 class="card-title">Spending · ${periodLabel(s)}</h2><div class="card-sub">${deltaHtml || "&nbsp;"}</div></div></div>
+    <div class="ledger-row"><span>Total spent</span><span>${fmtMoney(s.spend_total)}</span></div>
+    <div class="ledger-row"><span>Average per day</span><span>${fmtMoney(s.average_daily_spend)}</span></div>
+    ${s.largest_purchase ? `<div class="ledger-row"><span>Largest · ${escapeHtml(s.largest_purchase.name)}</span><span>${fmtMoney(s.largest_purchase.amount)}</span></div>` : ""}
+    ${recurring}
+  </section>`;
+}
+
+function rankCard(title, rows, kind) {
+  const body = rows.length
+    ? rows.map((r) => `
+        <button class="bar-row rank-row" data-kind="${kind}" data-value="${escapeHtml(r.name)}" title="Show only these transactions">
+          <span class="label">${kind === "category" ? categoryLabel(r.name) : escapeHtml(r.name)}</span>
+          <div class="bar-track"><div class="bar-fill" style="width:${Math.max(r.share * 100, 2)}%"></div></div>
+          <span class="amount">${fmtMoneyWhole(r.amount)}<span class="count">${r.count}×</span></span>
+        </button>`).join("")
+    : '<div class="empty">No spending in this period.</div>';
+  return `<section class="card span-4">
+    <div class="card-head"><div><h2 class="card-title">${title}</h2><div class="card-sub">Share of spending · click to filter</div></div></div>
+    ${body}
+  </section>`;
+}
+
+async function loadSummary() {
+  const params = new URLSearchParams();
+  for (const [id, key] of [["filter-account", "account_id"], ["filter-start", "start_date"], ["filter-end", "end_date"]]) {
+    const v = document.getElementById(id).value;
+    if (v) params.set(key, v);
+  }
+  const s = await apiFetch(`/api/transactions/summary?${params.toString()}`);
+  const el = document.getElementById("summary");
+  const heading = s.scope === "account"
+    ? `<div class="span-12 split" style="align-items:center">
+         <div><strong style="font-size:15px">${escapeHtml(s.account_name)}</strong>
+         <span class="muted"> · ${escapeHtml(s.institution_name || "")}</span></div>
+         <button class="btn ghost" id="summary-all" type="button">View all accounts</button>
+       </div>`
+    : "";
+  // Brokerage accounts have no card-style spending to break down.
+  const breakdown = s.investment
+    ? ""
+    : spendingCard(s) + rankCard("Top categories", s.top_categories, "category") + rankCard("Top merchants", s.top_merchants, "merchant");
+  el.innerHTML = heading + kpisFor(s) + breakdown;
+
+  const all = document.getElementById("summary-all");
+  if (all) all.addEventListener("click", () => { document.getElementById("filter-account").value = ""; reloadAll(); });
+  el.querySelectorAll(".rank-row").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      if (btn.dataset.kind === "category") {
+        document.getElementById("filter-category").value = btn.dataset.value;
+      } else {
+        document.getElementById("filter-q").value = btn.dataset.value;
+      }
+      loadTransactions(false).catch((e) => showToast(e.message));
+      document.querySelector(".card.flush").scrollIntoView({ behavior: "smooth", block: "start" });
+    })
+  );
+}
+
+function reloadAll() {
+  return Promise.all([loadSummary(), loadTransactions(false)]).catch((e) => showToast(e.message));
+}
+
+let searchTimer;
+document.getElementById("filter-q").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => loadTransactions(false).catch((e) => showToast(e.message)), 250);
+});
+// Account and date change what the summary covers; the rest only filter the table.
+["filter-account", "filter-start", "filter-end"].forEach((id) => document.getElementById(id).addEventListener("change", reloadAll));
+["filter-category", "filter-hide-internal"].forEach((id) =>
+  document.getElementById(id).addEventListener("change", () => loadTransactions(false).catch((e) => showToast(e.message)))
+);
+document.getElementById("clear-filters").addEventListener("click", () => {
+  FILTER_IDS.forEach((id) => (document.getElementById(id).value = ""));
+  reloadAll();
+});
+document.getElementById("load-more-btn").addEventListener("click", () => loadTransactions(true).catch((e) => showToast(e.message)));
+
+onDataChanged = reloadAll;
+// Deep link: /transactions?account=<plaid account id> opens that account.
+const initialAccount = new URLSearchParams(location.search).get("account");
+loadFilterOptions()
+  .then(() => { if (initialAccount) document.getElementById("filter-account").value = initialAccount; })
+  .catch(() => {})
+  .finally(reloadAll);
 </script>
 {% endblock %}

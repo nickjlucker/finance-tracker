@@ -38,7 +38,11 @@ class TransactionOut(BaseModel):
     pending: bool
     category_primary: str
     category_detailed: str
+    canonical_merchant: str = ""
+    is_internal_transfer: bool = False
+    is_credit_card_payment: bool = False
     account_name: str = ""
+    counterparty_account: str | None = None
 
 
 class BudgetIn(BaseModel):
@@ -62,9 +66,12 @@ class SyncResult(BaseModel):
 
 class DashboardSummary(BaseModel):
     cash: float
-    debt: float
     investments: float
-    net_position: float
+    total_assets: float
+    debt: float
+    net_worth: float
+    liquid_position: float
+    last_synced: date | None = None
     account_count: int
     month_spent: float
     month_income: float
@@ -85,12 +92,23 @@ class AlertOut(BaseModel):
     message: str
 
 
-class RecurringBillOut(BaseModel):
-    merchant: str
+class RecurringItemOut(BaseModel):
+    canonical_merchant: str
+    tier: str
+    heuristic_tier: str
+    overridden: bool
+    confidence: float
     average_amount: float
-    cadence_days: int
+    cadence_days: int | None
+    transaction_count: int
     last_date: date
-    next_expected_date: date
+    next_expected_date: date | None
+    category_primary: str
+    paid_from: str = "cash"
+
+
+class RecurringOverrideIn(BaseModel):
+    classification: str
 
 
 class FlaggedTransactionOut(BaseModel):
@@ -104,6 +122,7 @@ class FlaggedTransactionOut(BaseModel):
 class NetWorthPointOut(BaseModel):
     date: date
     net_worth: float
+    estimated: bool = False
 
 
 class ProjectionPointOut(BaseModel):
@@ -114,6 +133,68 @@ class ProjectionPointOut(BaseModel):
 class NetWorthOut(BaseModel):
     history: list[NetWorthPointOut]
     tracking_since: date | None
+    data_confidence: str
     monthly_net_savings: float
     annual_return_pct: float
     projection: list[ProjectionPointOut]
+    projection_series: list[NetWorthPointOut]
+    reconstructed_until: date | None = None
+
+
+class LiquidityBreakdownOut(BaseModel):
+    available_cash: float
+    confirmed_obligations_14d: float
+    card_payments_14d: float
+    everyday_spending_14d: float
+    expected_income_14d: float
+    projected_minimum_cash: float
+    severity: str | None
+
+
+class AlertsOut(BaseModel):
+    alerts: list[AlertOut]
+    liquidity: LiquidityBreakdownOut
+
+
+class CashFlowPointOut(BaseModel):
+    date: date
+    projected_balance: float
+
+
+class CashFlowEventOut(BaseModel):
+    date: date
+    label: str
+    amount: float
+    kind: str
+
+
+class CashFlowForecastOut(BaseModel):
+    series: list[CashFlowPointOut]
+    events: list[CashFlowEventOut]
+    lowest_balance: float
+    lowest_balance_date: date
+    total_expected_income: float
+    total_expected_bills: float
+    total_card_payments: float
+    total_everyday_spending: float
+    everyday_daily_rate: float
+    discretionary_buffer: float
+    excess_liquidity: float
+    safety_floor: float
+
+
+class HoldingOut(BaseModel):
+    account_name: str
+    ticker_symbol: str | None
+    security_name: str | None
+    quantity: float | None
+    institution_value: float | None
+    cost_basis: float | None
+
+
+class MonthlySummaryOut(BaseModel):
+    month: str
+    income: float
+    spend: float
+    savings: float
+    partial: bool

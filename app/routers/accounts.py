@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app import plaid_client
 from app.database import get_db
-from app.models import Account, PlaidItem
+from app.models import Account, CardLiability, Holding, PlaidItem
 from app.schemas import AccountOut, InstitutionOut
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,14 @@ def disconnect_institution(item_id: str, db: Session = Depends(get_db)):
         plaid_client.remove_item(item.access_token)
     except Exception as exc:
         logger.warning("item_remove failed for %s, proceeding with local cleanup: %s", item.institution_name, exc)
+
+    # CardLiability/Holding are plain FK columns (no ORM relationship/cascade),
+    # so they'd otherwise survive as orphans once the PlaidItem->Account cascade
+    # deletes the accounts they point to.
+    account_ids = [a.id for a in item.accounts]
+    if account_ids:
+        db.query(CardLiability).filter(CardLiability.account_id.in_(account_ids)).delete(synchronize_session=False)
+        db.query(Holding).filter(Holding.account_id.in_(account_ids)).delete(synchronize_session=False)
 
     db.delete(item)
     db.commit()

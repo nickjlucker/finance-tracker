@@ -53,6 +53,9 @@ class Transaction(Base):
     category_primary: Mapped[str] = mapped_column(String, default="OTHER", index=True)
     category_detailed: Mapped[str] = mapped_column(String, default="")
     is_internal_transfer: Mapped[bool] = mapped_column(default=False, index=True)
+    is_credit_card_payment: Mapped[bool] = mapped_column(default=False, index=True)
+    canonical_merchant: Mapped[str] = mapped_column(String, default="", index=True)
+    duplicate_group_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     matched_transaction_id: Mapped[int | None] = mapped_column(
         ForeignKey("transactions.id"), nullable=True
     )
@@ -92,3 +95,36 @@ class CardLiability(Base):
     last_payment_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_payment_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Security(Base):
+    __tablename__ = "securities"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    security_id: Mapped[str] = mapped_column(String, unique=True, index=True)
+    ticker_symbol: Mapped[str | None] = mapped_column(String, nullable=True)
+    name: Mapped[str | None] = mapped_column(String, nullable=True)
+    type: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class Holding(Base):
+    __tablename__ = "holdings"
+    __table_args__ = (UniqueConstraint("account_id", "security_id", name="uq_holding_account_security"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id"))
+    security_id: Mapped[int] = mapped_column(ForeignKey("securities.id"))
+    quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    institution_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    institution_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cost_basis: Mapped[float | None] = mapped_column(Float, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class RecurringOverride(Base):
+    __tablename__ = "recurring_overrides"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    canonical_merchant: Mapped[str] = mapped_column(String, unique=True, index=True)
+    user_classification: Mapped[str] = mapped_column(String)
+    set_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

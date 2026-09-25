@@ -4,25 +4,48 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}Finance Tracker{% endblock %}</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <link rel="stylesheet" href="{{ static_url('style.css') }}" />
   <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
 </head>
 <body>
-  <nav>
-    <span class="brand">Finance Tracker</span>
-    <a href="/" class="{{ 'active' if active == 'dashboard' }}">Dashboard</a>
-    <a href="/transactions" class="{{ 'active' if active == 'transactions' }}">Transactions</a>
-    <a href="/budgets" class="{{ 'active' if active == 'budgets' }}">Budgets</a>
-    {% if plaid_env == "production" %}
-    <span class="env-badge env-badge-live" title="Connected to real bank data via Plaid Production">LIVE</span>
-    {% else %}
-    <span class="env-badge env-badge-sandbox" title="Plaid Sandbox — fake institutions and test data only">SANDBOX</span>
-    {% endif %}
-  </nav>
-  <main>
-    {% block content %}{% endblock %}
-  </main>
-  <script src="/static/app.js"></script>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">FT</span>
+        <span class="brand-name">Finance Tracker</span>
+      </div>
+
+      <a href="/" class="nav-link {{ 'active' if active == 'dashboard' }}">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="11" y="3" width="6" height="6" rx="1.5"/><rect x="3" y="11" width="6" height="6" rx="1.5"/><rect x="11" y="11" width="6" height="6" rx="1.5"/></svg>
+        <span>Dashboard</span>
+      </a>
+      <a href="/transactions" class="nav-link {{ 'active' if active == 'transactions' }}">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 5h12M4 10h12M4 15h8"/></svg>
+        <span>Transactions</span>
+      </a>
+      <a href="/budgets" class="nav-link {{ 'active' if active == 'budgets' }}">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="10" cy="10" r="7"/><path d="M10 3v7l5 4" stroke-linecap="round"/></svg>
+        <span>Budgets</span>
+      </a>
+
+      <div class="sidebar-foot">
+        <div class="sync-status" id="sync-status"><span class="dot"></span><span>Checking…</span></div>
+        <button class="btn secondary block" id="sync-btn" type="button">Sync</button>
+        <button class="btn block" id="connect-btn" type="button">Connect account</button>
+        {% if plaid_env == "production" %}
+        <span class="env-badge env-badge-live" title="Connected to real bank data via Plaid Production">LIVE</span>
+        {% else %}
+        <span class="env-badge env-badge-sandbox" title="Plaid Sandbox — fake institutions and test data only">SANDBOX</span>
+        {% endif %}
+      </div>
+    </aside>
+
+    <main class="main">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  <div class="toast-stack" id="toast-stack"></div>
+  <script src="{{ static_url('app.js') }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

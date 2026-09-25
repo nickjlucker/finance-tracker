@@ -1,92 +1,192 @@
 {% extends "base.html" %}
 {% block title %}Budgets · Finance Tracker{% endblock %}
 {% block content %}
-<h1>Budgets</h1>
-
-<div class="card" style="margin-bottom:20px;">
-  <form class="budget-form" id="budget-form">
-    <select id="budget-category" required>
-      <option value="" disabled selected>Category…</option>
-    </select>
-    <input type="number" id="budget-limit" placeholder="Monthly limit" min="0" step="1" required />
-    <button type="submit" class="btn">Save budget</button>
-  </form>
+<div class="page-head">
+  <div>
+    <h1>Budgets</h1>
+    <div class="sub" id="budget-summary">&nbsp;</div>
+  </div>
 </div>
 
-<div class="card">
-  <div id="budget-list">
-    <div class="empty-state">No budgets set yet.</div>
+<div class="grid" style="align-items:start">
+  <section class="card span-8">
+    <div class="card-head">
+      <div>
+        <h2 class="card-title">This month</h2>
+        <div class="card-sub" id="month-progress">&nbsp;</div>
+      </div>
+    </div>
+    <div id="budget-list"><span class="skeleton"></span></div>
+  </section>
+
+  <div class="span-4" style="display:flex; flex-direction:column; gap:16px;">
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title" id="form-title">Add a budget</h2>
+          <div class="card-sub">Monthly limit for a spending category</div>
+        </div>
+      </div>
+      <form id="budget-form" class="stack-sm" style="display:flex; flex-direction:column; gap:12px;">
+        <div class="field">
+          <label for="budget-category">Category</label>
+          <select class="select" id="budget-category" required>
+            <option value="" disabled selected>Choose a category…</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="budget-limit">Monthly limit</label>
+          <input class="input" type="number" id="budget-limit" placeholder="e.g. 400" min="0" step="1" required />
+        </div>
+        <button type="submit" class="btn block">Save budget</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">Unbudgeted spending</h2>
+          <div class="card-sub">Categories you've spent in this month without a limit</div>
+        </div>
+      </div>
+      <ul class="list" id="unbudgeted-list"><li><span class="skeleton"></span></li></ul>
+    </section>
   </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-function statusClass(pct) {
-  if (pct > 100) return "status-critical";
-  if (pct >= 75) return "status-warning";
-  return "status-good";
+const BUDGET_CATEGORIES = [
+  "FOOD_AND_DRINK", "GENERAL_MERCHANDISE", "ENTERTAINMENT", "TRANSPORTATION", "TRAVEL",
+  "PERSONAL_CARE", "MEDICAL", "HOME_IMPROVEMENT", "GENERAL_SERVICES", "RENT_AND_UTILITIES",
+  "LOAN_PAYMENTS", "BANK_FEES", "GOVERNMENT_AND_NON_PROFIT", "TRANSFER_OUT", "OTHER",
+];
+
+function monthPace() {
+  const now = new Date();
+  const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  return { day: now.getDate(), days, pct: (now.getDate() / days) * 100 };
+}
+
+function tone(pct, pacePct) {
+  if (pct > 100) return "bad";
+  if (pct > pacePct + 10) return "warn";
+  return "good";
+}
+
+function prefillForm(category, limit, editing) {
+  document.getElementById("budget-category").value = category;
+  document.getElementById("budget-limit").value = limit ?? "";
+  document.getElementById("form-title").textContent = editing ? `Edit ${categoryLabel(category)}` : "Add a budget";
+  document.getElementById("budget-limit").focus();
 }
 
 async function loadBudgets() {
-  const budgets = await apiFetch("/api/budgets");
+  const [budgets, summary] = await Promise.all([apiFetch("/api/budgets"), apiFetch("/api/dashboard/summary")]);
+  const pace = monthPace();
+  document.getElementById("month-progress").textContent = `Day ${pace.day} of ${pace.days} · ${Math.round(pace.pct)}% of the month gone`;
+
   const listEl = document.getElementById("budget-list");
   if (budgets.length === 0) {
-    listEl.innerHTML = '<div class="empty-state">No budgets set yet.</div>';
-    return;
+    listEl.innerHTML = '<div class="empty">No budgets yet. Add one on the right, or start from a category under "Unbudgeted spending".</div>';
+    document.getElementById("budget-summary").textContent = "No budgets set";
+  } else {
+    const totalLimit = budgets.reduce((s, b) => s + b.monthly_limit, 0);
+    const totalSpent = budgets.reduce((s, b) => s + b.spent, 0);
+    document.getElementById("budget-summary").textContent =
+      `${fmtMoney(totalSpent)} of ${fmtMoney(totalLimit)} budgeted across ${budgets.length} categor${budgets.length === 1 ? "y" : "ies"}`;
+
+    listEl.innerHTML = `<div class="list">${budgets
+      .sort((a, b) => b.spent / (b.monthly_limit || 1) - a.spent / (a.monthly_limit || 1))
+      .map((b) => {
+        const pct = b.monthly_limit > 0 ? (b.spent / b.monthly_limit) * 100 : 0;
+        const t = tone(pct, pace.pct);
+        const left = b.monthly_limit - b.spent;
+        const status = left >= 0 ? `${fmtMoney(left)} left` : `<span class="delta-bad">${fmtMoney(-left)} over</span>`;
+        return `
+          <div class="row" style="display:block">
+            <div class="split" style="align-items:baseline">
+              <div class="row-title">${categoryLabel(b.category_primary)}</div>
+              <div class="row-end">
+                <span class="amount">${fmtMoney(b.spent)} <span class="muted" style="font-weight:400">/ ${fmtMoney(b.monthly_limit)}</span></span>
+              </div>
+            </div>
+            <div class="bar-track" style="margin:8px 0 6px; position:relative">
+              <div class="bar-fill ${t}" style="width:${Math.min(pct, 100)}%"></div>
+            </div>
+            <div class="split row-sub" style="align-items:center">
+              <span>${status} · ${Math.round(pct)}% used</span>
+              <span>
+                <button class="link-btn edit-budget" data-category="${b.category_primary}" data-limit="${b.monthly_limit}" style="margin-right:10px">Edit</button>
+                <button class="link-btn remove-budget" data-category="${b.category_primary}">Remove</button>
+              </span>
+            </div>
+          </div>`;
+      })
+      .join("")}</div>`;
+
+    listEl.querySelectorAll(".edit-budget").forEach((btn) =>
+      btn.addEventListener("click", () => prefillForm(btn.dataset.category, parseFloat(btn.dataset.limit), true))
+    );
+    listEl.querySelectorAll(".remove-budget").forEach((btn) =>
+      btn.addEventListener("click", async () => {
+        try {
+          await apiFetch(`/api/budgets/${encodeURIComponent(btn.dataset.category)}`, { method: "DELETE" });
+          showToast(`${categoryLabel(btn.dataset.category)} budget removed`);
+          await loadBudgets();
+        } catch (err) {
+          showToast(err.message);
+        }
+      })
+    );
   }
-  listEl.innerHTML = budgets
-    .map((b) => {
-      const pct = b.monthly_limit > 0 ? (b.spent / b.monthly_limit) * 100 : 0;
-      return `
-        <div class="bar-row">
-          <span>${b.category_primary.replaceAll("_", " ")}</span>
-          <div class="bar-track"><div class="bar-fill ${statusClass(pct)}" style="width:${Math.min(pct, 100)}%"></div></div>
-          <span class="bar-amount">${fmtMoney(b.spent)} / ${fmtMoney(b.monthly_limit)}</span>
-          <span class="delete-link" data-category="${b.category_primary}" style="grid-column: 1 / -1; justify-self: end;">Remove</span>
-        </div>`;
-    })
-    .join("");
 
-  listEl.querySelectorAll(".delete-link").forEach((el) => {
-    el.addEventListener("click", async () => {
-      await apiFetch(`/api/budgets/${encodeURIComponent(el.dataset.category)}`, { method: "DELETE" });
-      loadBudgets();
-    });
-  });
+  const budgeted = new Set(budgets.map((b) => b.category_primary));
+  const unbudgeted = summary.spend_by_category.filter((r) => !budgeted.has(r.category));
+  const unEl = document.getElementById("unbudgeted-list");
+  unEl.innerHTML = unbudgeted.length
+    ? unbudgeted
+        .map((r) => `
+          <li class="row">
+            <div class="row-main"><div class="row-title">${categoryLabel(r.category)}</div></div>
+            <div class="row-end">
+              <span class="amount">${fmtMoney(r.amount)}</span>
+              <button class="btn ghost set-budget" data-category="${r.category}" data-suggest="${Math.ceil((r.amount / pace.pct) * 100 / 50) * 50}">Set limit</button>
+            </div>
+          </li>`)
+        .join("")
+    : '<li class="empty">Everything you\'ve spent on this month has a budget.</li>';
+  unEl.querySelectorAll(".set-budget").forEach((btn) =>
+    btn.addEventListener("click", () => prefillForm(btn.dataset.category, parseFloat(btn.dataset.suggest), false))
+  );
 }
 
-const PLAID_CATEGORIES = [
-  "INCOME", "TRANSFER_IN", "TRANSFER_OUT", "LOAN_PAYMENTS", "BANK_FEES",
-  "ENTERTAINMENT", "FOOD_AND_DRINK", "GENERAL_MERCHANDISE", "HOME_IMPROVEMENT",
-  "MEDICAL", "PERSONAL_CARE", "GENERAL_SERVICES", "GOVERNMENT_AND_NON_PROFIT",
-  "TRANSPORTATION", "TRAVEL", "RENT_AND_UTILITIES", "OTHER",
-];
-
-function loadCategoryOptions() {
-  const select = document.getElementById("budget-category");
-  PLAID_CATEGORIES.forEach((c) => {
-    const opt = document.createElement("option");
-    opt.value = c;
-    opt.textContent = c.replaceAll("_", " ");
-    select.appendChild(opt);
-  });
-}
+const select = document.getElementById("budget-category");
+BUDGET_CATEGORIES.map((c) => [c, categoryLabel(c)])
+  .sort((a, b) => a[1].localeCompare(b[1]))
+  .forEach(([value, label]) => select.add(new Option(label, value)));
 
 document.getElementById("budget-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const category_primary = document.getElementById("budget-category").value;
+  const category_primary = select.value;
   const monthly_limit = parseFloat(document.getElementById("budget-limit").value);
-  await apiFetch("/api/budgets", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ category_primary, monthly_limit }),
-  });
-  document.getElementById("budget-limit").value = "";
-  loadBudgets();
+  try {
+    await apiFetch("/api/budgets", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category_primary, monthly_limit }),
+    });
+    showToast(`${categoryLabel(category_primary)} budget saved`);
+    e.target.reset();
+    document.getElementById("form-title").textContent = "Add a budget";
+    await loadBudgets();
+  } catch (err) {
+    showToast(err.message);
+  }
 });
 
-loadCategoryOptions();
+onDataChanged = loadBudgets;
 loadBudgets().catch((err) => showToast(err.message));
 </script>
 {% endblock %}

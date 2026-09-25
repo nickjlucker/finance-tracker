@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from app import analytics, plaid_client
 from app.database import get_db
-from app.models import Account, CardLiability, PlaidItem, Transaction
+from app.models import Account, CardLiability, Holding, PlaidItem, Security, Transaction
 from app.routers.transactions import _upsert_transaction
 
 logger = logging.getLogger(__name__)
@@ -73,10 +73,48 @@ def _refresh_liabilities(db: Session, item: PlaidItem) -> int:
     return updated
 
 
+def _refresh_holdings(db: Session, item: PlaidItem) -> int:
+    try:
+        securities, holdings = plaid_client.get_holdings(item.access_token)
+    except Exception:
+        logger.info("Investments not available for item %s (product not granted yet)", item.item_id)
+        return 0
+
+    security_by_plaid_id: dict[str, Security] = {}
+    for sec in securities:
+        record = db.query(Security).filter_by(security_id=sec.security_id).one_or_none()
+        if record is None:
+            record = Security(security_id=sec.security_id)
+            db.add(record)
+        record.ticker_symbol = sec.ticker_symbol
+        record.name = sec.name
+        record.type = sec.type
+        security_by_plaid_id[sec.security_id] = record
+    db.flush()
+
+    account_by_plaid_id = {a.account_id: a for a in item.accounts}
+    updated = 0
+    for holding in holdings:
+        account = account_by_plaid_id.get(holding.account_id)
+        security = security_by_plaid_id.get(holding.security_id)
+        if account is None or security is None:
+            continue
+        record = db.query(Holding).filter_by(account_id=account.id, security_id=security.id).one_or_none()
+        if record is None:
+            record = Holding(account_id=account.id, security_id=security.id)
+            db.add(record)
+        record.quantity = holding.quantity
+        record.institution_price = holding.institution_price
+        record.institution_value = holding.institution_value
+        record.cost_basis = holding.cost_basis
+        updated += 1
+    return updated
+
+
 @router.post("/full")
 def sync_full(db: Session = Depends(get_db)):
     items = db.query(PlaidItem).all()
-    totals = {"added": 0, "modified": 0, "removed": 0, "liabilities_updated": 0}
+    totals = {"added": 0, "modified": 0, "removed": 0, "liabilities_updated": 0, "holdings_updated": 0}
 
     for item in items:
         try:
@@ -90,9 +128,12 @@ def sync_full(db: Session = Depends(get_db)):
         totals["removed"] += len(result["removed"])
 
         totals["liabilities_updated"] += _refresh_liabilities(db, item)
+        totals["holdings_updated"] += _refresh_holdings(db, item)
 
     db.flush()
+    analytics.backfill_canonical_merchants(db)
     analytics.reconcile_internal_transfers(db)
+    analytics.detect_duplicate_groups(db)
     analytics.record_balance_snapshots(db)
     db.commit()
 

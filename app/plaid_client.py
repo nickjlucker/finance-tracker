@@ -6,6 +6,7 @@ from plaid.model.item_public_token_exchange_request import ItemPublicTokenExchan
 from plaid.model.item_remove_request import ItemRemoveRequest
 from plaid.model.item_get_request import ItemGetRequest
 from plaid.model.institutions_get_by_id_request import InstitutionsGetByIdRequest
+from plaid.model.investments_holdings_get_request import InvestmentsHoldingsGetRequest
 from plaid.model.liabilities_get_request import LiabilitiesGetRequest
 from plaid.model.link_token_create_request import LinkTokenCreateRequest
 from plaid.model.link_token_create_request_user import LinkTokenCreateRequestUser
@@ -89,6 +90,11 @@ def remove_item(access_token: str) -> None:
 def get_liabilities(access_token: str) -> list:
     response = client.liabilities_get(LiabilitiesGetRequest(access_token=access_token))
     return response.liabilities.credit or []
+
+
+def get_holdings(access_token: str) -> tuple[list, list]:
+    response = client.investments_holdings_get(InvestmentsHoldingsGetRequest(access_token=access_token))
+    return response.securities or [], response.holdings or []
 
 
 def sync_transactions(access_token: str, cursor: str | None) -> dict:

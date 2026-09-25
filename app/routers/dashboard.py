@@ -1,18 +1,35 @@
 from datetime import date
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.templating import Jinja2Templates
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app import analytics
 from app.config import settings
 from app.database import get_db
-from app.models import Account, Budget
+from app.models import Account, BalanceSnapshot, Budget
 from app.schemas import DashboardSummary
 
 router = APIRouter(tags=["dashboard"])
 templates = Jinja2Templates(directory="app/templates")
 templates.env.globals["plaid_env"] = settings.plaid_env
+
+_STATIC_DIR = Path("app/static")
+
+
+def static_url(path: str) -> str:
+    # Version by mtime so browsers never pair a new page with a cached old
+    # stylesheet/script (they otherwise reuse /static files without asking).
+    try:
+        version = int((_STATIC_DIR / path).stat().st_mtime)
+    except OSError:
+        version = 0
+    return f"/static/{path}?v={version}"
+
+
+templates.env.globals["static_url"] = static_url
 
 
 @router.get("/")
@@ -43,7 +60,8 @@ def dashboard_summary(db: Session = Depends(get_db)):
     budget_count = db.query(Budget).count()
 
     return {
-        **analytics.cash_debt_net(db),
+        **analytics.asset_breakdown(db),
+        "last_synced": db.query(func.max(BalanceSnapshot.recorded_at)).scalar(),
         "account_count": len(accounts),
         "month_spent": total_spent,
         "month_income": analytics.income_total(db, month_start, today),
